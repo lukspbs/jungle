@@ -14,7 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/jonatancruz/jungle/internal/platform/config"
+	"github.com/lukspbs/jungle/internal/platform/config"
 )
 
 // NewPool abre o pool de conexões e confirma que o banco responde.

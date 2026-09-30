@@ -7,7 +7,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/jonatancruz/jungle/internal/domain/money"
+	"github.com/lukspbs/jungle/internal/domain/money"
 )
 
 // Snapshot é a forma persistida de uma transação.

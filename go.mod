@@ -1,4 +1,4 @@
-module github.com/jonatancruz/jungle
+module github.com/lukspbs/jungle
 
 go 1.27.1
 

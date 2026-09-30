@@ -6,7 +6,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/jonatancruz/jungle/internal/domain/money"
+	"github.com/lukspbs/jungle/internal/domain/money"
 )
 
 var (

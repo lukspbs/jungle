@@ -7,8 +7,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/jonatancruz/jungle/internal/domain/money"
-	"github.com/jonatancruz/jungle/internal/domain/wagering"
+	"github.com/lukspbs/jungle/internal/domain/money"
+	"github.com/lukspbs/jungle/internal/domain/wagering"
 )
 
 var (

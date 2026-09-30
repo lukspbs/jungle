@@ -18,7 +18,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/jonatancruz/jungle/internal/domain/money"
+	"github.com/lukspbs/jungle/internal/domain/money"
 )
 
 // Wallet é a carteira de um jogador em uma moeda.

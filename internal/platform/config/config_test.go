@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jonatancruz/jungle/internal/platform/config"
+	"github.com/lukspbs/jungle/internal/platform/config"
 )
 
 // chaves é o conjunto que Load consulta. O teste limpa todas antes de cada

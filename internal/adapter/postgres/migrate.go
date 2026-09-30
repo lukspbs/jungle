@@ -10,7 +10,7 @@ import (
 	_ "github.com/golang-migrate/migrate/v4/database/pgx/v5"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
 
-	"github.com/jonatancruz/jungle/migrations"
+	"github.com/lukspbs/jungle/migrations"
 )
 
 // Migrator aplica e reverte as migrations embutidas.

@@ -17,8 +17,8 @@ import (
 	"os"
 	"strconv"
 
-	"github.com/jonatancruz/jungle/internal/adapter/postgres"
-	"github.com/jonatancruz/jungle/internal/platform/config"
+	"github.com/lukspbs/jungle/internal/adapter/postgres"
+	"github.com/lukspbs/jungle/internal/platform/config"
 )
 
 func main() {

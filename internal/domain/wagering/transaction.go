@@ -16,7 +16,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/jonatancruz/jungle/internal/domain/money"
+	"github.com/lukspbs/jungle/internal/domain/money"
 )
 
 // WagerTransaction é a operação registrada, interna ou de provedor.
