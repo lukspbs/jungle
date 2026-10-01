@@ -1,6 +1,7 @@
 package app_test
 
 import (
+	"encoding/json"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -55,4 +56,10 @@ func brlOf(t *testing.T, amount string) money.Money {
 		t.Fatalf("Parse(%q): %v", amount, err)
 	}
 	return m
+}
+
+// jsonDecode é o atalho de desserialização usado pelas asserções sobre
+// payloads gravados na outbox.
+func jsonDecode(raw []byte, destino any) error {
+	return json.Unmarshal(raw, destino)
 }
