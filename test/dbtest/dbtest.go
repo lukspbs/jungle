@@ -78,6 +78,28 @@ func Pool(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
+// DrainOutbox marca como publicados todos os eventos pendentes no momento da
+// chamada.
+//
+// Os testes que medem a fila — reivindicação concorrente, lease, reagendamento
+// — afirmam coisas sobre quem está na frente. Como a suíte compartilha o banco
+// e eventos de execuções anteriores continuam pendentes para sempre, sem drenar
+// eles seriam reivindicados primeiro e os eventos do teste nunca chegariam a
+// ser atendidos. Drenar é legítimo: a outbox é uma fila, e marcar publicado é
+// a operação normal dela.
+func DrainOutbox(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if _, err := pool.Exec(ctx, `
+		UPDATE outbox_events
+		   SET published_at = now(), locked_by = NULL, locked_until = NULL
+		 WHERE published_at IS NULL`); err != nil {
+		t.Fatalf("falha ao drenar a outbox: %v", err)
+	}
+}
+
 func applyMigrations(url string) error {
 	migrator, err := postgres.NewMigrator(url)
 	if err != nil {

@@ -72,6 +72,7 @@ func TestOutboxPreservaOEnvelopeByteABytes(t *testing.T) {
 // oferece: publishers concorrentes dividem a fila em vez de disputarem linha.
 func TestDoisPublishersNaoPegamOMesmoEvento(t *testing.T) {
 	store := dbtest.Store(t)
+	dbtest.DrainOutbox(t, dbtest.Pool(t))
 	ctx := context.Background()
 	agora := time.Now().UTC()
 
@@ -128,6 +129,7 @@ func TestDoisPublishersNaoPegamOMesmoEvento(t *testing.T) {
 // a reivindicação e a publicação.
 func TestLeaseVencidoLiberaTrabalhoAbandonado(t *testing.T) {
 	store := dbtest.Store(t)
+	dbtest.DrainOutbox(t, dbtest.Pool(t))
 	ctx := context.Background()
 	agora := time.Now().UTC()
 
@@ -176,6 +178,7 @@ func TestLeaseVencidoLiberaTrabalhoAbandonado(t *testing.T) {
 
 func TestPublicacaoConfirmadaSaiDaFila(t *testing.T) {
 	store := dbtest.Store(t)
+	dbtest.DrainOutbox(t, dbtest.Pool(t))
 	ctx := context.Background()
 	agora := time.Now().UTC()
 
@@ -206,6 +209,7 @@ func TestPublicacaoConfirmadaSaiDaFila(t *testing.T) {
 
 func TestReagendamentoRespeitaOPrazo(t *testing.T) {
 	store := dbtest.Store(t)
+	dbtest.DrainOutbox(t, dbtest.Pool(t))
 	ctx := context.Background()
 	agora := time.Now().UTC()
 
