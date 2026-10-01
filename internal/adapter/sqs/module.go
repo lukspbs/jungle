@@ -16,6 +16,7 @@ var Module = fx.Module("sqs",
 		newClient,
 		NewPublisher,
 		func(p *Publisher) app.EventPublisher { return p },
+		NewConsumer,
 	),
 )
 

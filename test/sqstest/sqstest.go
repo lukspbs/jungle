@@ -86,15 +86,24 @@ func drainByReceive(t *testing.T, client *awssqs.Client, queueURL string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	for i := 0; i < 50; i++ {
+	// Duas voltas vazias seguidas encerram: o SQS devolve lotes parciais, e uma
+	// única resposta vazia não significa fila vazia.
+	vazias := 0
+	for i := 0; i < 60 && vazias < 3; i++ {
 		out, err := client.ReceiveMessage(ctx, &awssqs.ReceiveMessageInput{
 			QueueUrl:            aws.String(queueURL),
 			MaxNumberOfMessages: 10,
 			WaitTimeSeconds:     0,
+			VisibilityTimeout:   0,
 		})
-		if err != nil || len(out.Messages) == 0 {
+		if err != nil {
 			return
 		}
+		if len(out.Messages) == 0 {
+			vazias++
+			continue
+		}
+		vazias = 0
 		for _, m := range out.Messages {
 			_, _ = client.DeleteMessage(ctx, &awssqs.DeleteMessageInput{
 				QueueUrl: aws.String(queueURL), ReceiptHandle: m.ReceiptHandle,

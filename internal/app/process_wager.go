@@ -75,22 +75,12 @@ func (uc *ProcessWager) Execute(ctx context.Context, cmd ProcessWagerCommand) (P
 		return ProcessWagerResult{}, err
 	}
 
-	fingerprint, err := ComputeFingerprint(FingerprintFields{
-		ProviderID:                     cmd.ProviderID,
-		ExternalTransactionID:          cmd.ExternalTransactionID,
-		PlayerID:                       cmd.PlayerID,
-		WalletID:                       cmd.WalletID,
-		RoundID:                        cmd.RoundID,
-		GameID:                         cmd.GameID,
-		Kind:                           cmd.Kind,
-		Money:                          cmd.Money,
-		ReferenceExternalTransactionID: cmd.ReferenceExternalTransactionID,
-	})
+	fingerprint, err := uc.fingerprintOf(cmd)
 	if err != nil {
 		return ProcessWagerResult{}, err
 	}
 
-	if res, encontrado, err := uc.replay(ctx, cmd, fingerprint); err != nil || encontrado {
+	if res, encontrado, err := uc.replay(ctx, uc.store.Read(), cmd, fingerprint); err != nil || encontrado {
 		return res, err
 	}
 
@@ -98,7 +88,7 @@ func (uc *ProcessWager) Execute(ctx context.Context, cmd ProcessWagerCommand) (P
 	if isDuplicate(err) {
 		// Corrida perdida: outra requisição com a mesma identidade gravou
 		// primeiro. O resultado correto é o que ela produziu.
-		res, encontrado, errReplay := uc.replay(ctx, cmd, fingerprint)
+		res, encontrado, errReplay := uc.replay(ctx, uc.store.Read(), cmd, fingerprint)
 		if errReplay != nil {
 			return ProcessWagerResult{}, errReplay
 		}
@@ -127,10 +117,9 @@ func (uc *ProcessWager) validate(cmd ProcessWagerCommand) error {
 // segunda reconhece a chave reutilizada em outra operação. Hash igual é replay;
 // hash diferente é conflito.
 func (uc *ProcessWager) replay(
-	ctx context.Context, cmd ProcessWagerCommand, fingerprint Fingerprint,
+	ctx context.Context, repos *postgres.Repositories,
+	cmd ProcessWagerCommand, fingerprint Fingerprint,
 ) (ProcessWagerResult, bool, error) {
-	repos := uc.store.Read()
-
 	porOperacao, err := repos.Transactions.FindByProviderAndExternalID(
 		ctx, cmd.ProviderID, cmd.ExternalTransactionID)
 	switch {
@@ -169,11 +158,71 @@ func decide(tx *wagering.WagerTransaction, fingerprint Fingerprint) (ProcessWage
 	}, true, nil
 }
 
-// process executa a operação sob o lock da carteira.
+// ExecuteWithin processa dentro de uma transação já aberta.
+//
+// Existe para o consumidor SQS, que precisa gravar o registro de inbox no mesmo
+// commit das alterações de domínio. Sem isso, inbox e efeito financeiro
+// poderiam divergir numa queda entre as duas transações.
+//
+// Diferente de Execute, não trata violação de unicidade: no PostgreSQL ela
+// invalida a transação inteira, e só um rollback seguido de nova tentativa
+// resolve. Cabe a quem chama repetir a transação, e aí o caminho de replay
+// encontra o que a concorrente gravou.
+func (uc *ProcessWager) ExecuteWithin(
+	ctx context.Context, r *postgres.Repositories, cmd ProcessWagerCommand,
+) (ProcessWagerResult, error) {
+	if err := uc.validate(cmd); err != nil {
+		return ProcessWagerResult{}, err
+	}
+	fingerprint, err := uc.fingerprintOf(cmd)
+	if err != nil {
+		return ProcessWagerResult{}, err
+	}
+	if res, encontrado, err := uc.replay(ctx, r, cmd, fingerprint); err != nil || encontrado {
+		return res, err
+	}
+	return uc.processWithin(ctx, r, cmd, fingerprint, uc.clock.Now())
+}
+
+// fingerprintOf calcula o hash dos campos de negócio do comando.
+func (uc *ProcessWager) fingerprintOf(cmd ProcessWagerCommand) (Fingerprint, error) {
+	return ComputeFingerprint(FingerprintFields{
+		ProviderID:                     cmd.ProviderID,
+		ExternalTransactionID:          cmd.ExternalTransactionID,
+		PlayerID:                       cmd.PlayerID,
+		WalletID:                       cmd.WalletID,
+		RoundID:                        cmd.RoundID,
+		GameID:                         cmd.GameID,
+		Kind:                           cmd.Kind,
+		Money:                          cmd.Money,
+		ReferenceExternalTransactionID: cmd.ReferenceExternalTransactionID,
+	})
+}
+
+// process abre a transação e executa o miolo.
 func (uc *ProcessWager) process(
 	ctx context.Context, cmd ProcessWagerCommand, fingerprint Fingerprint,
 ) (ProcessWagerResult, error) {
 	agora := uc.clock.Now()
+	var resultado ProcessWagerResult
+
+	err := uc.store.InTx(ctx, func(ctx context.Context, r *postgres.Repositories) error {
+		var err error
+		resultado, err = uc.processWithin(ctx, r, cmd, fingerprint, agora)
+		return err
+	})
+	if err != nil {
+		return ProcessWagerResult{}, err
+	}
+	return resultado, nil
+}
+
+// processWithin executa a operação sob o lock da carteira, usando os
+// repositórios de uma transação já aberta.
+func (uc *ProcessWager) processWithin(
+	ctx context.Context, r *postgres.Repositories,
+	cmd ProcessWagerCommand, fingerprint Fingerprint, agora time.Time,
+) (ProcessWagerResult, error) {
 
 	txID, err := uc.ids.New()
 	if err != nil {
@@ -199,89 +248,82 @@ func (uc *ProcessWager) process(
 		return ProcessWagerResult{}, fmt.Errorf("%w: %s", ErrInvalidCommand, err)
 	}
 
-	var resultado ProcessWagerResult
-	err = uc.store.InTx(ctx, func(ctx context.Context, r *postgres.Repositories) error {
-		// A carteira é travada antes de qualquer decisão. Daqui até o commit,
-		// nenhum outro escritor desta carteira avança — e carteiras distintas
-		// seguem em paralelo, porque o lock é de linha.
-		w, err := r.Wallets.LockForUpdate(ctx, cmd.WalletID)
-		if errors.Is(err, postgres.ErrWalletNotFound) {
-			// A chave estrangeira impede registrar uma recusa para uma carteira
-			// que não existe, então este caso sai como erro e não como
-			// transação REJECTED persistida.
-			return fmt.Errorf("%w: %s", ErrWalletNotFound, cmd.WalletID)
-		}
-		if err != nil {
-			return err
-		}
-
-		if code, recusa := uc.checkWallet(w, cmd); recusa {
-			return uc.reject(ctx, r, tx, code, agora, cmd.CorrelationID, &resultado)
-		}
-
-		// Reversões dependem de uma referência que pode não ter chegado ainda.
-		direcao := movementDirection(cmd.Kind)
-		if cmd.Kind.IsReversal() {
-			ref, dir, decisao, code, err := uc.resolveReference(ctx, r, cmd, w)
-			if err != nil {
-				return err
-			}
-			switch decisao {
-			case resolutionWait:
-				return uc.waitForReference(ctx, r, tx, cmd, agora, &resultado)
-			case resolutionReject:
-				return uc.reject(ctx, r, tx, code, agora, cmd.CorrelationID, &resultado)
-			}
-			if err := tx.ResolveReference(ref.ID(), agora); err != nil {
-				return err
-			}
-			direcao = dir
-		}
-
-		versaoAnterior := w.Version()
-		entry, movErr := uc.move(w, tx, cmd, direcao, agora)
-		if movErr != nil {
-			code, recusa := classifyMovement(movErr, cmd.Kind)
-			if !recusa {
-				return movErr
-			}
-			return uc.reject(ctx, r, tx, code, agora, cmd.CorrelationID, &resultado)
-		}
-
-		if err := tx.MarkProcessed(w.Balance(), agora); err != nil {
-			return err
-		}
-		if err := r.Transactions.Insert(ctx, tx); err != nil {
-			return err
-		}
-
-		emitidos := []events.Payload{processedPayload(tx, w, cmd)}
-
-		if entry != nil {
-			if err := r.Ledger.Insert(ctx, entry); err != nil {
-				return err
-			}
-			if err := r.Wallets.UpdateBalance(ctx, w, versaoAnterior); err != nil {
-				return err
-			}
-			emitidos = append(emitidos, balanceChangedPayload(tx, w, entry, agora))
-		}
-
-		if err := uc.emit(ctx, r, emitidos, cmd.CorrelationID, tx.ID().String(), agora); err != nil {
-			return err
-		}
-
-		resultado = ProcessWagerResult{
-			TransactionID: tx.ID(),
-			Status:        tx.Status(),
-			Balance:       tx.ResultBalance(),
-		}
-		return nil
-	})
+	// A carteira é travada antes de qualquer decisão. Daqui até o commit,
+	// nenhum outro escritor desta carteira avança — e carteiras distintas
+	// seguem em paralelo, porque o lock é de linha.
+	w, err := r.Wallets.LockForUpdate(ctx, cmd.WalletID)
+	if errors.Is(err, postgres.ErrWalletNotFound) {
+		// A chave estrangeira impede registrar uma recusa para uma carteira
+		// que não existe, então este caso sai como erro e não como
+		// transação REJECTED persistida.
+		return ProcessWagerResult{}, fmt.Errorf("%w: %s", ErrWalletNotFound, cmd.WalletID)
+	}
 	if err != nil {
 		return ProcessWagerResult{}, err
 	}
-	return resultado, nil
+
+	if code, recusa := uc.checkWallet(w, cmd); recusa {
+		return uc.rejectResult(ctx, r, tx, code, agora, cmd.CorrelationID)
+	}
+
+	// Reversões dependem de uma referência que pode não ter chegado ainda.
+	direcao := movementDirection(cmd.Kind)
+	if cmd.Kind.IsReversal() {
+		ref, dir, decisao, code, err := uc.resolveReference(ctx, r, cmd, w)
+		if err != nil {
+			return ProcessWagerResult{}, err
+		}
+		switch decisao {
+		case resolutionWait:
+			return uc.waitResult(ctx, r, tx, cmd, agora)
+		case resolutionReject:
+			return uc.rejectResult(ctx, r, tx, code, agora, cmd.CorrelationID)
+		}
+		if err := tx.ResolveReference(ref.ID(), agora); err != nil {
+			return ProcessWagerResult{}, err
+		}
+		direcao = dir
+	}
+
+	versaoAnterior := w.Version()
+	entry, movErr := uc.move(w, tx, cmd, direcao, agora)
+	if movErr != nil {
+		code, recusa := classifyMovement(movErr, cmd.Kind)
+		if !recusa {
+			return ProcessWagerResult{}, movErr
+		}
+		return uc.rejectResult(ctx, r, tx, code, agora, cmd.CorrelationID)
+	}
+
+	if err := tx.MarkProcessed(w.Balance(), agora); err != nil {
+		return ProcessWagerResult{}, err
+	}
+	if err := r.Transactions.Insert(ctx, tx); err != nil {
+		return ProcessWagerResult{}, err
+	}
+
+	emitidos := []events.Payload{processedPayload(tx, w, cmd)}
+
+	if entry != nil {
+		if err := r.Ledger.Insert(ctx, entry); err != nil {
+			return ProcessWagerResult{}, err
+		}
+		if err := r.Wallets.UpdateBalance(ctx, w, versaoAnterior); err != nil {
+			return ProcessWagerResult{}, err
+		}
+		emitidos = append(emitidos, balanceChangedPayload(tx, w, entry, agora))
+	}
+
+	if err := uc.emit(ctx, r, emitidos, cmd.CorrelationID, tx.ID().String(), agora); err != nil {
+		return ProcessWagerResult{}, err
+	}
+
+	return ProcessWagerResult{
+		TransactionID: tx.ID(),
+		Status:        tx.Status(),
+		Balance:       tx.ResultBalance(),
+	}, nil
+
 }
 
 // checkWallet aplica as regras que dependem da carteira já travada.
@@ -366,6 +408,26 @@ func (uc *ProcessWager) reject(
 	code wagering.FailureCode, agora time.Time, correlationID string, out *ProcessWagerResult,
 ) error {
 	return uc.rejectWith(ctx, r, tx, code, agora, correlationID, out, r.Transactions.Insert)
+}
+
+// rejectResult recusa a operação e devolve o resultado.
+func (uc *ProcessWager) rejectResult(
+	ctx context.Context, r *postgres.Repositories, tx *wagering.WagerTransaction,
+	code wagering.FailureCode, agora time.Time, correlationID string,
+) (ProcessWagerResult, error) {
+	var out ProcessWagerResult
+	err := uc.reject(ctx, r, tx, code, agora, correlationID, &out)
+	return out, err
+}
+
+// waitResult registra a pendência e devolve o resultado.
+func (uc *ProcessWager) waitResult(
+	ctx context.Context, r *postgres.Repositories, tx *wagering.WagerTransaction,
+	cmd ProcessWagerCommand, agora time.Time,
+) (ProcessWagerResult, error) {
+	var out ProcessWagerResult
+	err := uc.waitForReference(ctx, r, tx, cmd, agora, &out)
+	return out, err
 }
 
 // rejectWith recusa a operação persistindo-a pelo caminho indicado.
