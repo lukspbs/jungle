@@ -10,6 +10,7 @@ import (
 	"go.uber.org/fx"
 
 	"github.com/lukspbs/jungle/internal/app"
+	"github.com/lukspbs/jungle/internal/platform/auth"
 	"github.com/lukspbs/jungle/internal/platform/config"
 )
 
@@ -17,6 +18,7 @@ import (
 var Module = fx.Module("http",
 	fx.Provide(
 		func(r *app.Readiness) ReadinessChecker { return r },
+		newVerifier,
 		NewHandlers,
 		NewRouter,
 		newServer,
@@ -25,6 +27,13 @@ var Module = fx.Module("http",
 	// dele, o Fx não construiria nada.
 	fx.Invoke(func(*http.Server) {}),
 )
+
+// newVerifier descobre o emissor na construção: um IdP inacessível impede a
+// aplicação de subir, em vez de deixá-la aceitar requisições que não consegue
+// autenticar.
+func newVerifier(cfg config.Auth) (*auth.Verifier, error) {
+	return auth.NewVerifier(context.Background(), cfg)
+}
 
 func newServer(lc fx.Lifecycle, cfg config.HTTP, handler http.Handler) *http.Server {
 	servidor := &http.Server{

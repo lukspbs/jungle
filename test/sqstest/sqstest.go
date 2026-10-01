@@ -67,18 +67,14 @@ func Client(t *testing.T) (*awssqs.Client, config.SQS) {
 //
 // Os testes de mensageria afirmam sobre o que chegou, e mensagens de execuções
 // anteriores atrapalhariam essa contagem.
+//
+// O esvaziamento é por recebimento e apagamento, e não por PurgeQueue. A purga
+// é assíncrona e pode remover mensagens enviadas depois da chamada, o que
+// derrubaria um teste vizinho que acabou de publicar. Receber e apagar é
+// síncrono e só toca no que já estava lá.
 func Drain(t *testing.T, client *awssqs.Client, queueURL string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	if _, err := client.PurgeQueue(ctx, &awssqs.PurgeQueueInput{
-		QueueUrl: aws.String(queueURL),
-	}); err != nil {
-		// PurgeQueue tem limite de uma chamada por minuto. Quando recusado,
-		// o esvaziamento manual resolve.
-		drainByReceive(t, client, queueURL)
-	}
+	drainByReceive(t, client, queueURL)
 }
 
 func drainByReceive(t *testing.T, client *awssqs.Client, queueURL string) {

@@ -33,6 +33,8 @@ type problem struct {
 const (
 	codeInvalidRequest      = "INVALID_REQUEST"
 	codeMissingIdempotency  = "MISSING_IDEMPOTENCY_KEY"
+	codeUnauthenticated     = "UNAUTHENTICATED"
+	codeForbidden           = "FORBIDDEN"
 	codeNotFound            = "NOT_FOUND"
 	codeConflict            = "CONFLICT"
 	codeIdempotencyConflict = "IDEMPOTENCY_CONFLICT"
@@ -48,6 +50,8 @@ const (
 // são cinco situações distintas, e o cliente precisa distingui-las sem ler o
 // texto da mensagem.
 //
+//	401  credencial ausente, expirada, com assinatura ou audiência inválida
+//	403  identidade autenticada sem permissão para a operação
 //	400  entrada malformada, campo ausente, valor fora do contrato
 //	404  carteira ou transação inexistente
 //	409  abertura repetida, ou chave de idempotência com outro conteúdo
@@ -57,6 +61,9 @@ const (
 //
 // Processamento pendente não é erro: sai como 202 no caminho de sucesso.
 func statusFor(err error) (int, string) {
+	if status, code, ok := authStatusFor(err); ok {
+		return status, code
+	}
 	switch {
 	case errors.Is(err, app.ErrInvalidCommand),
 		errors.Is(err, money.ErrInvalidAmount),

@@ -51,6 +51,10 @@ func NewHandlers(
 
 // OpenWallet responde POST /wallets.
 func (h *Handlers) OpenWallet(w http.ResponseWriter, r *http.Request) {
+	if !requireWalletAdmin(w, r) {
+		return
+	}
+
 	var req openWalletRequest
 	if !decode(w, r, &req) {
 		return
@@ -83,6 +87,12 @@ func (h *Handlers) ProcessWager(w http.ResponseWriter, r *http.Request) {
 	// A chave vem do cabeçalho e é usada como veio. O servidor não a calcula
 	// nem a substitui: o cliente pode montá-la como provider:externalId, mas
 	// quem decide é ele.
+	// O provedor vem do token. O corpo pode repeti-lo, mas não pode contrariá-lo.
+	providerID, ok := requireProvider(w, r)
+	if !ok {
+		return
+	}
+
 	chave := r.Header.Get("Idempotency-Key")
 	if chave == "" {
 		writeProblem(w, r, http.StatusBadRequest, codeMissingIdempotency,
@@ -94,6 +104,13 @@ func (h *Handlers) ProcessWager(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
+
+	if req.ProviderID != "" && req.ProviderID != providerID {
+		writeProblem(w, r, http.StatusForbidden, codeForbidden,
+			"providerId do corpo difere da identidade autenticada")
+		return
+	}
+	req.ProviderID = providerID
 
 	cmd, err := req.toCommand(chave, correlationID(r))
 	if err != nil {
@@ -149,6 +166,9 @@ func (req wagerRequest) toCommand(chave, correlationID string) (app.ProcessWager
 
 // GetWallet responde GET /wallets/{walletId}.
 func (h *Handlers) GetWallet(w http.ResponseWriter, r *http.Request) {
+	if !requireWalletAdmin(w, r) {
+		return
+	}
 	walletID, err := parseUUID("walletId", r.PathValue("walletId"))
 	if err != nil {
 		writeError(w, r, err)
@@ -164,6 +184,9 @@ func (h *Handlers) GetWallet(w http.ResponseWriter, r *http.Request) {
 
 // GetLedger responde GET /wallets/{walletId}/ledger.
 func (h *Handlers) GetLedger(w http.ResponseWriter, r *http.Request) {
+	if !requireWalletAdmin(w, r) {
+		return
+	}
 	walletID, err := parseUUID("walletId", r.PathValue("walletId"))
 	if err != nil {
 		writeError(w, r, err)
@@ -214,6 +237,13 @@ func (h *Handlers) GetTransaction(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
+	// A autorização acontece depois da leitura porque o provedor dono só é
+	// conhecido ao ler a transação. O identificador interno é opaco, então
+	// adivinhá-lo para sondar a existência alheia não é um caminho prático — e
+	// ainda assim a resposta é 404, não 403.
+	if !authorizeProviderScope(w, r, tx.ProviderID()) {
+		return
+	}
 	writeJSON(w, http.StatusOK, transactionOf(tx))
 }
 
@@ -228,6 +258,10 @@ func (h *Handlers) GetProviderTransaction(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	if !authorizeProviderScope(w, r, providerID) {
+		return
+	}
+
 	tx, err := h.queries.ProviderTransaction(r.Context(), providerID, externalID)
 	if err != nil {
 		writeError(w, r, err)
@@ -238,6 +272,9 @@ func (h *Handlers) GetProviderTransaction(w http.ResponseWriter, r *http.Request
 
 // Reconcile responde POST /wallets/{walletId}/reconciliation.
 func (h *Handlers) Reconcile(w http.ResponseWriter, r *http.Request) {
+	if !requireWalletAdmin(w, r) {
+		return
+	}
 	walletID, err := parseUUID("walletId", r.PathValue("walletId"))
 	if err != nil {
 		writeError(w, r, err)

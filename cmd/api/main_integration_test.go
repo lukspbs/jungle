@@ -33,8 +33,14 @@ func ambienteValido(t *testing.T) int {
 		t.Skip("TEST_DATABASE_URL não definida: teste de composição pulado")
 	}
 
+	emissor := os.Getenv("TEST_AUTH_ISSUER_URL")
+	if emissor == "" {
+		t.Skip("TEST_AUTH_ISSUER_URL não definida: teste de composição pulado")
+	}
+
 	porta := portaLivre(t)
 	t.Setenv("DATABASE_URL", url)
+	t.Setenv("AUTH_ISSUER_URL", emissor)
 	t.Setenv("HTTP_PORT", fmt.Sprint(porta))
 	t.Setenv("HTTP_SHUTDOWN_TIMEOUT", "5s")
 	t.Setenv("REFERENCE_POLL_INTERVAL", "50ms")
@@ -143,6 +149,25 @@ func TestConfiguracaoInvalidaImpedeASubida(t *testing.T) {
 	if err == nil {
 		_ = aplicacao.Stop(ctx)
 		t.Fatal("a aplicação subiu com configuração inválida")
+	}
+}
+
+// TestIdPIndisponivelImpedeASubida confere que o emissor é descoberto na
+// inicialização, e não na primeira requisição autenticada.
+func TestIdPIndisponivelImpedeASubida(t *testing.T) {
+	ambienteValido(t)
+	t.Setenv("AUTH_ISSUER_URL", "http://127.0.0.1:1/realms/inexistente")
+
+	aplicacao := fx.New(Modules(), fx.WithLogger(func() fxevent.Logger {
+		return fxevent.NopLogger
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	if err := aplicacao.Start(ctx); err == nil {
+		_ = aplicacao.Stop(ctx)
+		t.Fatal("a aplicação subiu com o IdP inacessível")
 	}
 }
 

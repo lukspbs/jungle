@@ -25,6 +25,7 @@ type Config struct {
 	Reference Reference
 	SQS       SQS
 	Outbox    Outbox
+	Auth      Auth
 }
 
 // App traz os metadados do processo.
@@ -64,6 +65,17 @@ type Database struct {
 	// contra um lock de carteira segurado indefinidamente por um cliente
 	// travado.
 	StatementTimeout time.Duration
+}
+
+// Auth traz a integração com o IdP externo.
+type Auth struct {
+	// IssuerURL é o emissor OIDC. A descoberta busca as chaves públicas a
+	// partir dele.
+	IssuerURL string
+
+	// Audience é o identificador desta API no IdP. Tokens emitidos para outro
+	// serviço do mesmo realm são recusados.
+	Audience string
 }
 
 // SQS traz o acesso à mensageria.
@@ -187,6 +199,11 @@ func Load() (Config, error) {
 	cfg.Database.StatementTimeout, err = envDuration("DATABASE_STATEMENT_TIMEOUT", 10*time.Second)
 	collect(err)
 
+	authIssuer, err := required("AUTH_ISSUER_URL")
+	collect(err)
+	cfg.Auth.IssuerURL = authIssuer
+	cfg.Auth.Audience = envOr("AUTH_AUDIENCE", "jungle-api")
+
 	cfg.SQS.Endpoint = envOr("SQS_ENDPOINT", "")
 	cfg.SQS.Region = envOr("AWS_REGION", "us-east-1")
 	cfg.SQS.InboundQueueURL = envOr("SQS_INBOUND_QUEUE_URL", "")
@@ -260,6 +277,9 @@ func (c Config) validate() []string {
 		problems = append(problems, fmt.Sprintf(
 			"DATABASE_MIN_CONNS (%d) não pode exceder DATABASE_MAX_CONNS (%d)",
 			c.Database.MinConns, c.Database.MaxConns))
+	}
+	if c.Auth.Audience == "" {
+		problems = append(problems, "AUTH_AUDIENCE não pode ser vazia")
 	}
 	if c.SQS.MaxMessages < 1 || c.SQS.MaxMessages > 10 {
 		problems = append(problems, fmt.Sprintf(

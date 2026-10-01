@@ -15,6 +15,12 @@ import (
 var chaves = []string{
 	"APP_ENV", "APP_INSTANCE_ID", "LOG_LEVEL",
 	"DATABASE_URL", "DATABASE_MAX_CONNS", "DATABASE_MIN_CONNS",
+	"AUTH_ISSUER_URL", "AUTH_AUDIENCE",
+	"SQS_ENDPOINT", "SQS_MAX_MESSAGES", "SQS_WAIT_TIME", "SQS_VISIBILITY_TIMEOUT",
+	"OUTBOX_BATCH_SIZE", "OUTBOX_LEASE", "OUTBOX_POLL_INTERVAL",
+	"OUTBOX_INITIAL_BACKOFF", "OUTBOX_MAX_BACKOFF",
+	"REFERENCE_TTL", "REFERENCE_MAX_ATTEMPTS", "REFERENCE_INITIAL_BACKOFF",
+	"REFERENCE_MAX_BACKOFF", "REFERENCE_POLL_INTERVAL", "REFERENCE_BATCH_SIZE",
 	"DATABASE_MAX_CONN_LIFETIME", "DATABASE_CONNECT_TIMEOUT", "DATABASE_STATEMENT_TIMEOUT",
 	"HTTP_PORT", "HTTP_READ_HEADER_TIMEOUT", "HTTP_READ_TIMEOUT",
 	"HTTP_WRITE_TIMEOUT", "HTTP_IDLE_TIMEOUT", "HTTP_SHUTDOWN_TIMEOUT",
@@ -35,7 +41,8 @@ func ambiente(t *testing.T, vars map[string]string) {
 
 func TestCarregaComPadroes(t *testing.T) {
 	ambiente(t, map[string]string{
-		"DATABASE_URL": "postgres://user:pass@localhost:5432/jungle?sslmode=disable",
+		"DATABASE_URL":    "postgres://user:pass@localhost:5432/jungle?sslmode=disable",
+		"AUTH_ISSUER_URL": "http://localhost:8081/realms/jungle",
 	})
 
 	cfg, err := config.Load()
@@ -68,6 +75,7 @@ func TestCarregaComPadroes(t *testing.T) {
 func TestSobrescreveComAmbiente(t *testing.T) {
 	ambiente(t, map[string]string{
 		"DATABASE_URL":               "postgres://localhost/jungle",
+		"AUTH_ISSUER_URL":            "http://localhost:8081/realms/jungle",
 		"DATABASE_MAX_CONNS":         "25",
 		"DATABASE_MIN_CONNS":         "5",
 		"DATABASE_STATEMENT_TIMEOUT": "3s",
@@ -104,18 +112,19 @@ func TestRecusaConfiguracaoInvalida(t *testing.T) {
 	}{
 		{
 			"sem DATABASE_URL",
-			map[string]string{},
+			map[string]string{"AUTH_ISSUER_URL": "http://localhost/realms/jungle"},
 			"DATABASE_URL é obrigatória",
 		},
 		{
 			"DATABASE_URL só com espaços",
-			map[string]string{"DATABASE_URL": "   "},
+			map[string]string{"DATABASE_URL": "   ", "AUTH_ISSUER_URL": "http://localhost/realms/jungle"},
 			"DATABASE_URL é obrigatória",
 		},
 		{
 			"pool mínimo maior que o máximo",
 			map[string]string{
 				"DATABASE_URL":       "postgres://localhost/jungle",
+				"AUTH_ISSUER_URL":    "http://localhost/realms/jungle",
 				"DATABASE_MIN_CONNS": "50",
 				"DATABASE_MAX_CONNS": "5",
 			},
@@ -125,6 +134,7 @@ func TestRecusaConfiguracaoInvalida(t *testing.T) {
 			"pool máximo zerado",
 			map[string]string{
 				"DATABASE_URL":       "postgres://localhost/jungle",
+				"AUTH_ISSUER_URL":    "http://localhost/realms/jungle",
 				"DATABASE_MAX_CONNS": "0",
 			},
 			"ao menos 1",
@@ -132,8 +142,9 @@ func TestRecusaConfiguracaoInvalida(t *testing.T) {
 		{
 			"porta fora do intervalo",
 			map[string]string{
-				"DATABASE_URL": "postgres://localhost/jungle",
-				"HTTP_PORT":    "99999",
+				"DATABASE_URL":    "postgres://localhost/jungle",
+				"AUTH_ISSUER_URL": "http://localhost/realms/jungle",
+				"HTTP_PORT":       "99999",
 			},
 			"HTTP_PORT fora do intervalo",
 		},
@@ -141,6 +152,7 @@ func TestRecusaConfiguracaoInvalida(t *testing.T) {
 			"duração malformada",
 			map[string]string{
 				"DATABASE_URL":             "postgres://localhost/jungle",
+				"AUTH_ISSUER_URL":          "http://localhost/realms/jungle",
 				"DATABASE_CONNECT_TIMEOUT": "cinco segundos",
 			},
 			"não é duração válida",
@@ -149,6 +161,7 @@ func TestRecusaConfiguracaoInvalida(t *testing.T) {
 			"duração não positiva",
 			map[string]string{
 				"DATABASE_URL":          "postgres://localhost/jungle",
+				"AUTH_ISSUER_URL":       "http://localhost/realms/jungle",
 				"HTTP_SHUTDOWN_TIMEOUT": "0s",
 			},
 			"precisa ser positiva",
@@ -156,8 +169,9 @@ func TestRecusaConfiguracaoInvalida(t *testing.T) {
 		{
 			"inteiro malformado",
 			map[string]string{
-				"DATABASE_URL": "postgres://localhost/jungle",
-				"HTTP_PORT":    "oitenta",
+				"DATABASE_URL":    "postgres://localhost/jungle",
+				"AUTH_ISSUER_URL": "http://localhost/realms/jungle",
+				"HTTP_PORT":       "oitenta",
 			},
 			"não é inteiro",
 		},
@@ -186,6 +200,7 @@ func TestRecusaConfiguracaoInvalida(t *testing.T) {
 func TestReportaTodosOsProblemasDeUmaVez(t *testing.T) {
 	ambiente(t, map[string]string{
 		"DATABASE_URL":       "postgres://localhost/jungle",
+		"AUTH_ISSUER_URL":    "http://localhost/realms/jungle",
 		"DATABASE_MIN_CONNS": "50",
 		"DATABASE_MAX_CONNS": "5",
 		"HTTP_PORT":          "99999",

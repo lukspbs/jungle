@@ -14,12 +14,24 @@ import (
 
 	adapterhttp "github.com/lukspbs/jungle/internal/adapter/http"
 	"github.com/lukspbs/jungle/internal/app"
+	"github.com/lukspbs/jungle/test/authtest"
 	"github.com/lukspbs/jungle/test/dbtest"
 )
 
 type api struct {
 	servidor *httptest.Server
 	prefixo  string
+
+	// tokenPadrao acompanha toda requisição que não traga Authorization
+	// própria. A autenticação é obrigatória, então um teste sem token é um
+	// teste de 401 — e esses pedem o cabeçalho explicitamente.
+	tokenPadrao string
+}
+
+// comToken devolve a mesma API falando por outra identidade.
+func (a api) comToken(token string) api {
+	a.tokenPadrao = token
+	return a
 }
 
 type relogio struct{}
@@ -43,10 +55,14 @@ func novaAPI(t *testing.T) api {
 		app.NewQueries(store),
 		app.NewReadiness(store),
 	)
-	servidor := httptest.NewServer(adapterhttp.NewRouter(handlers))
+	servidor := httptest.NewServer(adapterhttp.NewRouter(handlers, authtest.Verifier(t)))
 	t.Cleanup(servidor.Close)
 
-	return api{servidor: servidor, prefixo: uuid.NewString()}
+	return api{
+		servidor:    servidor,
+		prefixo:     uuid.NewString(),
+		tokenPadrao: authtest.Internal(t),
+	}
 }
 
 func (a api) do(t *testing.T, metodo, caminho string, corpo any, headers map[string]string) (int, []byte) {
@@ -67,9 +83,7 @@ func (a api) do(t *testing.T, metodo, caminho string, corpo any, headers map[str
 		t.Fatalf("NewRequest: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	for k, v := range headers {
-		req.Header.Set(k, v)
-	}
+	a.autentica(req, headers)
 
 	res, err := a.servidor.Client().Do(req)
 	if err != nil {
@@ -92,9 +106,8 @@ func (a api) doRaw(t *testing.T, metodo, caminho, corpo string, headers map[stri
 		t.Fatalf("NewRequest: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	for k, v := range headers {
-		req.Header.Set(k, v)
-	}
+	a.autentica(req, headers)
+
 	res, err := a.servidor.Client().Do(req)
 	if err != nil {
 		t.Fatalf("Do: %v", err)
@@ -103,6 +116,17 @@ func (a api) doRaw(t *testing.T, metodo, caminho, corpo string, headers map[stri
 	var buf bytes.Buffer
 	buf.ReadFrom(res.Body)
 	return res.StatusCode, buf.Bytes()
+}
+
+// autentica aplica os cabeçalhos pedidos e, se nenhum trouxe Authorization,
+// anexa o token padrão da identidade atual.
+func (a api) autentica(req *http.Request, headers map[string]string) {
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	if req.Header.Get("Authorization") == "" && a.tokenPadrao != "" {
+		req.Header.Set("Authorization", authtest.Bearer(a.tokenPadrao))
+	}
 }
 
 func decodificar(t *testing.T, raw []byte, destino any) {
@@ -232,8 +256,9 @@ func TestEntradaInvalidaNaAbertura(t *testing.T) {
 }
 
 func TestOperacaoPelaAPI(t *testing.T) {
-	a := novaAPI(t)
-	carteira := a.abreCarteira(t, "1000.00")
+	interno := novaAPI(t)
+	carteira := interno.abreCarteira(t, "1000.00")
+	a := interno.comToken(authtest.ProviderA(t))
 	walletID := carteira["id"].(string)
 	playerID := carteira["playerId"].(string)
 
@@ -305,8 +330,9 @@ func TestOperacaoPelaAPI(t *testing.T) {
 }
 
 func TestRecusaDeNegocioEh422(t *testing.T) {
-	a := novaAPI(t)
-	carteira := a.abreCarteira(t, "10.00")
+	interno := novaAPI(t)
+	carteira := interno.abreCarteira(t, "10.00")
+	a := interno.comToken(authtest.ProviderA(t))
 	chave, corpo := a.aposta(carteira["id"].(string), carteira["playerId"].(string),
 		"BET", "500.00", "sem-saldo")
 
@@ -333,8 +359,9 @@ func TestRecusaDeNegocioEh422(t *testing.T) {
 }
 
 func TestPendenciaDeReferenciaEh202(t *testing.T) {
-	a := novaAPI(t)
-	carteira := a.abreCarteira(t, "1000.00")
+	interno := novaAPI(t)
+	carteira := interno.abreCarteira(t, "1000.00")
+	a := interno.comToken(authtest.ProviderA(t))
 	chave, corpo := a.aposta(carteira["id"].(string), carteira["playerId"].(string),
 		"REFUND", "25.00", "estorno-orfao")
 	corpo["referenceExternalTransactionId"] = a.prefixo + "-nunca-chegou"
@@ -352,8 +379,9 @@ func TestPendenciaDeReferenciaEh202(t *testing.T) {
 }
 
 func TestOpeningPelaAPIEhRecusado(t *testing.T) {
-	a := novaAPI(t)
-	carteira := a.abreCarteira(t, "100.00")
+	interno := novaAPI(t)
+	carteira := interno.abreCarteira(t, "100.00")
+	a := interno.comToken(authtest.ProviderA(t))
 	chave, corpo := a.aposta(carteira["id"].(string), carteira["playerId"].(string),
 		"OPENING", "500.00", "abertura-externa")
 
@@ -369,10 +397,11 @@ func TestConsultas(t *testing.T) {
 	carteira := a.abreCarteira(t, "1000.00")
 	walletID := carteira["id"].(string)
 	playerID := carteira["playerId"].(string)
+	provedor := a.comToken(authtest.ProviderA(t))
 
 	for i := 0; i < 5; i++ {
 		chave, corpo := a.aposta(walletID, playerID, "BET", "10.00", fmt.Sprintf("consulta-%d", i))
-		if status, raw := a.do(t, "POST", "/wagering/transactions", corpo,
+		if status, raw := provedor.do(t, "POST", "/wagering/transactions", corpo,
 			map[string]string{"Idempotency-Key": chave}); status != http.StatusOK {
 			t.Fatalf("aposta %d: %d %s", i, status, raw)
 		}
@@ -445,7 +474,7 @@ func TestConsultas(t *testing.T) {
 
 	t.Run("transação por provedor e id externo", func(t *testing.T) {
 		externalID := a.prefixo + "-consulta-0"
-		status, raw := a.do(t, "GET",
+		status, raw := provedor.do(t, "GET",
 			"/providers/provider-a/wagering/transactions/"+externalID, nil, nil)
 		if status != http.StatusOK {
 			t.Fatalf("status = %d: %s", status, raw)
@@ -457,10 +486,11 @@ func TestConsultas(t *testing.T) {
 		}
 
 		t.Run("outro provedor não enxerga", func(t *testing.T) {
-			status, _ := a.do(t, "GET",
-				"/providers/provider-b/wagering/transactions/"+externalID, nil, nil)
+			outro := a.comToken(authtest.ProviderB(t))
+			status, _ := outro.do(t, "GET",
+				"/providers/provider-a/wagering/transactions/"+externalID, nil, nil)
 			if status != http.StatusNotFound {
-				t.Errorf("status = %d, esperado 404", status)
+				t.Errorf("status = %d, esperado 404: o provider-b enxergou a operação do provider-a", status)
 			}
 		})
 	})
