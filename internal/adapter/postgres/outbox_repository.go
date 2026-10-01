@@ -203,3 +203,33 @@ func (r *OutboxRepository) FindByID(ctx context.Context, eventID uuid.UUID) (Out
 	}
 	return rec, true, nil
 }
+
+// ListByAggregate devolve os eventos de um agregado em ordem de ocorrência.
+// Serve ao diagnóstico — "o que foi publicado por causa desta operação" — e às
+// verificações de atomicidade nos testes.
+func (r *OutboxRepository) ListByAggregate(
+	ctx context.Context, aggregate events.Aggregate, aggregateID uuid.UUID,
+) ([]OutboxRecord, error) {
+	const query = `
+		SELECT event_id, event_type, aggregate_id, payload, correlation_id, attempts, occurred_at
+		  FROM outbox_events
+		 WHERE aggregate_type = $1 AND aggregate_id = $2
+		 ORDER BY occurred_at, event_id`
+
+	rows, err := r.db.Query(ctx, query, aggregate.String(), aggregateID)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: falha ao listar eventos do agregado: %w", classify(err))
+	}
+	defer rows.Close()
+
+	var registros []OutboxRecord
+	for rows.Next() {
+		var rec OutboxRecord
+		if err := rows.Scan(&rec.EventID, &rec.EventType, &rec.AggregateID,
+			&rec.Payload, &rec.CorrelationID, &rec.Attempts, &rec.OccurredAt); err != nil {
+			return nil, fmt.Errorf("postgres: falha ao ler evento: %w", err)
+		}
+		registros = append(registros, rec)
+	}
+	return registros, rows.Err()
+}
