@@ -4,7 +4,7 @@ import "fmt"
 
 // Currency é um código de moeda ISO 4217 validado.
 //
-// A validação é de formato: exatamente três letras maiúsculas ASCII. Optamos
+// A validação é de formato: exatamente três letras maiúsculas ASCII. Optei
 // por não embutir a tabela ISO 4217 completa para não precisar versioná-la;
 // a consequência é que um código sintaticamente válido mas inexistente seria
 // aceito. O risco é contido porque a moeda de toda movimentação é comparada

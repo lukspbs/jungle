@@ -289,7 +289,7 @@ func TestTransacaoTerminalNaoAceitaAtualizacao(t *testing.T) {
 		t.Fatalf("inserção: %v", err)
 	}
 
-	// O domínio recusaria a transição, então forçamos o UPDATE direto para
+	// O domínio recusaria a transição, então forço o UPDATE direto para
 	// provar que a trigger é uma camada independente da aplicação.
 	err := store.InTx(ctx, func(ctx context.Context, r *postgres.Repositories) error {
 		reidratada, err := wagering.Rehydrate(wagering.Snapshot{

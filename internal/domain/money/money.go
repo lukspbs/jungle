@@ -205,7 +205,7 @@ func parseMinorUnits(s string) (int64, error) {
 	if s == "" {
 		return 0, fmt.Errorf("%w: string vazia", ErrInvalidAmount)
 	}
-	// Distinguimos o negativo bem-formado do lixo sintático: a API precisa de
+	// Distingo o negativo bem-formado do lixo sintático: a API precisa de
 	// failureCodes diferentes para "mandou -25.00" e "mandou abc".
 	if s[0] == '-' {
 		return 0, fmt.Errorf("%w: %q", ErrNegativeAmount, s)
@@ -217,7 +217,7 @@ func parseMinorUnits(s string) (int64, error) {
 
 	intPart, fracPart, hasSeparator := strings.Cut(s, ".")
 	if intPart == "" {
-		// Cobre "." e ".50": exigimos ao menos um dígito na parte inteira.
+		// Cobre "." e ".50": exijo ao menos um dígito na parte inteira.
 		return 0, fmt.Errorf("%w: %q", ErrInvalidAmount, s)
 	}
 	if hasSeparator && fracPart == "" {

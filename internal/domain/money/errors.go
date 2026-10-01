@@ -20,7 +20,7 @@ var (
 	ErrInvalidAmount = errors.New("money: valor decimal inválido")
 
 	// ErrScaleExceeded indica mais casas decimais do que a escala suportada.
-	// Nunca arredondamos silenciosamente: a entrada é rejeitada.
+	// Nunca arredondo silenciosamente: a entrada é rejeitada.
 	ErrScaleExceeded = errors.New("money: escala excedida")
 
 	// ErrNegativeAmount indica valor negativo em entrada financeira externa.

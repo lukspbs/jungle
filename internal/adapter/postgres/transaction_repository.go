@@ -26,8 +26,8 @@ const transactionColumns = `id, source, kind, status, wallet_id, player_id,
 // Insert grava uma transação recém-aceita.
 //
 // A inserção é o ponto de idempotência: em vez de consultar antes para ver se
-// a operação já existe — o que abre janela entre a consulta e a escrita — a
-// gente tenta inserir e deixa a constraint decidir. O erro nomeado que volta
+// a operação já existe — o que abre janela entre a consulta e a escrita —
+// tento inserir e deixo a constraint decidir. O erro nomeado que volta
 // diz exatamente qual garantia foi tocada.
 func (r *TransactionRepository) Insert(ctx context.Context, t *wagering.WagerTransaction) error {
 	const query = `

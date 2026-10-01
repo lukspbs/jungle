@@ -9,7 +9,7 @@
 -- assinatura ou hash sobre o payload chegue ao mesmo resultado nas duas.
 --
 -- JSON guarda o texto como recebido e ainda valida a boa formação. Não há
--- perda: nunca consultamos dentro do payload, então os operadores e índices
+-- perda: nunca consulto dentro do payload, então os operadores e índices
 -- que só o JSONB oferece não fazem falta aqui.
 
 ALTER TABLE outbox_events

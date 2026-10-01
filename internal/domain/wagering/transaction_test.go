@@ -220,7 +220,7 @@ func TestAberturaInternaNasceConcluida(t *testing.T) {
 }
 
 // transacaoEm devolve uma transação no estado pedido, montada por reidratação
-// para não depender das transições que estamos testando.
+// para não depender das transições que estou testando.
 func transacaoEm(t *testing.T, status wagering.Status, kind wagering.Kind) *wagering.WagerTransaction {
 	t.Helper()
 	// LOSS é o único tipo sem movimentação: exige exatamente zero.
