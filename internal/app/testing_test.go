@@ -2,6 +2,7 @@ package app_test
 
 import (
 	"encoding/json"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -62,4 +63,30 @@ func brlOf(t *testing.T, amount string) money.Money {
 // payloads gravados na outbox.
 func jsonDecode(raw []byte, destino any) error {
 	return json.Unmarshal(raw, destino)
+}
+
+// relogioAjustavel permite avançar o tempo nos testes que dependem de prazos.
+//
+// O worker de referências só reivindica o que já venceu, e um relógio fixo
+// nunca faz um backoff vencer. Avançar explicitamente mantém o teste
+// determinístico — nada de dormir esperando o relógio real.
+type relogioAjustavel struct {
+	mu sync.Mutex
+	t  time.Time
+}
+
+func novoRelogio(inicio time.Time) *relogioAjustavel {
+	return &relogioAjustavel{t: inicio}
+}
+
+func (r *relogioAjustavel) Now() time.Time {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.t
+}
+
+func (r *relogioAjustavel) Avanca(d time.Duration) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.t = r.t.Add(d)
 }

@@ -365,10 +365,23 @@ func (uc *ProcessWager) reject(
 	ctx context.Context, r *postgres.Repositories, tx *wagering.WagerTransaction,
 	code wagering.FailureCode, agora time.Time, correlationID string, out *ProcessWagerResult,
 ) error {
+	return uc.rejectWith(ctx, r, tx, code, agora, correlationID, out, r.Transactions.Insert)
+}
+
+// rejectWith recusa a operação persistindo-a pelo caminho indicado.
+//
+// A entrada normal insere uma transação nova; o worker de referências atualiza
+// uma que já existe. O resto da recusa — transição, evento, resultado — é o
+// mesmo nos dois casos, e manter um caminho só evita que eles divirjam.
+func (uc *ProcessWager) rejectWith(
+	ctx context.Context, r *postgres.Repositories, tx *wagering.WagerTransaction,
+	code wagering.FailureCode, agora time.Time, correlationID string, out *ProcessWagerResult,
+	persist func(context.Context, *wagering.WagerTransaction) error,
+) error {
 	if err := tx.Reject(code, agora); err != nil {
 		return err
 	}
-	if err := r.Transactions.Insert(ctx, tx); err != nil {
+	if err := persist(ctx, tx); err != nil {
 		return err
 	}
 	payload := events.WagerTransactionRejected{
