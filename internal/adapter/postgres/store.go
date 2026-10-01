@@ -39,6 +39,7 @@ type Repositories struct {
 	Wallets      *WalletRepository
 	Transactions *TransactionRepository
 	Ledger       *LedgerRepository
+	Outbox       *OutboxRepository
 }
 
 func newRepositories(db DBTX) *Repositories {
@@ -46,6 +47,7 @@ func newRepositories(db DBTX) *Repositories {
 		Wallets:      &WalletRepository{db: db},
 		Transactions: &TransactionRepository{db: db},
 		Ledger:       &LedgerRepository{db: db},
+		Outbox:       &OutboxRepository{db: db},
 	}
 }
 
