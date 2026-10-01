@@ -51,14 +51,15 @@ type ProcessWagerResult struct {
 // HTTP e SQS compartilham este caso de uso, e com ele as garantias de
 // idempotência: a chave de entrada muda de lugar, o resto do caminho é o mesmo.
 type ProcessWager struct {
-	store *postgres.Store
-	clock Clock
-	ids   IDs
+	store     *postgres.Store
+	clock     Clock
+	ids       IDs
+	reference ReferencePolicy
 }
 
 // NewProcessWager monta o caso de uso.
-func NewProcessWager(store *postgres.Store, clock Clock, ids IDs) *ProcessWager {
-	return &ProcessWager{store: store, clock: clock, ids: ids}
+func NewProcessWager(store *postgres.Store, clock Clock, ids IDs, reference ReferencePolicy) *ProcessWager {
+	return &ProcessWager{store: store, clock: clock, ids: ids, reference: reference}
 }
 
 // Execute processa a operação.
@@ -116,12 +117,7 @@ func (uc *ProcessWager) validate(cmd ProcessWagerCommand) error {
 	if cmd.IdempotencyKey == "" {
 		return fmt.Errorf("%w: chave de idempotência ausente", ErrInvalidCommand)
 	}
-	if cmd.Kind.IsReversal() {
-		// REFUND e ROLLBACK dependem da resolução de referência, que ainda não
-		// faz parte deste caso de uso.
-		return fmt.Errorf("%w: %s ainda não é processado por este caminho", ErrInvalidCommand, cmd.Kind)
-	}
-	return nil
+	return validateReversal(cmd)
 }
 
 // replay consulta o resultado de um processamento anterior.
@@ -185,18 +181,19 @@ func (uc *ProcessWager) process(
 	}
 
 	tx, err := wagering.NewExternal(wagering.ExternalRequest{
-		ID:                    txID,
-		ProviderID:            cmd.ProviderID,
-		ExternalTransactionID: cmd.ExternalTransactionID,
-		IdempotencyKey:        cmd.IdempotencyKey,
-		PayloadHash:           fingerprint.Bytes(),
-		WalletID:              cmd.WalletID,
-		PlayerID:              cmd.PlayerID,
-		RoundID:               cmd.RoundID,
-		GameID:                cmd.GameID,
-		Kind:                  cmd.Kind,
-		Amount:                cmd.Money,
-		Now:                   agora,
+		ID:                             txID,
+		ProviderID:                     cmd.ProviderID,
+		ExternalTransactionID:          cmd.ExternalTransactionID,
+		IdempotencyKey:                 cmd.IdempotencyKey,
+		PayloadHash:                    fingerprint.Bytes(),
+		WalletID:                       cmd.WalletID,
+		PlayerID:                       cmd.PlayerID,
+		RoundID:                        cmd.RoundID,
+		GameID:                         cmd.GameID,
+		Kind:                           cmd.Kind,
+		Amount:                         cmd.Money,
+		ReferenceExternalTransactionID: cmd.ReferenceExternalTransactionID,
+		Now:                            agora,
 	})
 	if err != nil {
 		return ProcessWagerResult{}, fmt.Errorf("%w: %s", ErrInvalidCommand, err)
@@ -222,8 +219,27 @@ func (uc *ProcessWager) process(
 			return uc.reject(ctx, r, tx, code, agora, cmd.CorrelationID, &resultado)
 		}
 
+		// Reversões dependem de uma referência que pode não ter chegado ainda.
+		direcao := movementDirection(cmd.Kind)
+		if cmd.Kind.IsReversal() {
+			ref, dir, decisao, code, err := uc.resolveReference(ctx, r, cmd, w)
+			if err != nil {
+				return err
+			}
+			switch decisao {
+			case resolutionWait:
+				return uc.waitForReference(ctx, r, tx, cmd, agora, &resultado)
+			case resolutionReject:
+				return uc.reject(ctx, r, tx, code, agora, cmd.CorrelationID, &resultado)
+			}
+			if err := tx.ResolveReference(ref.ID(), agora); err != nil {
+				return err
+			}
+			direcao = dir
+		}
+
 		versaoAnterior := w.Version()
-		entry, movErr := uc.move(w, tx, cmd, agora)
+		entry, movErr := uc.move(w, tx, cmd, direcao, agora)
 		if movErr != nil {
 			code, recusa := classifyMovement(movErr, cmd.Kind)
 			if !recusa {
@@ -284,7 +300,8 @@ func (uc *ProcessWager) checkWallet(
 // move aplica a movimentação do tipo. LOSS não movimenta: devolve lançamento
 // nulo e a carteira segue intacta, sem avançar a versão.
 func (uc *ProcessWager) move(
-	w *wallet.Wallet, tx *wagering.WagerTransaction, cmd ProcessWagerCommand, agora time.Time,
+	w *wallet.Wallet, tx *wagering.WagerTransaction, cmd ProcessWagerCommand,
+	direcao wallet.Direction, agora time.Time,
 ) (*wallet.LedgerEntry, error) {
 	if !cmd.Kind.MovesBalance() {
 		return nil, nil
@@ -295,13 +312,27 @@ func (uc *ProcessWager) move(
 		return nil, fmt.Errorf("app: falha ao gerar identificador: %w", err)
 	}
 
-	switch cmd.Kind {
-	case wagering.Bet:
+	switch direcao {
+	case wallet.Debit:
 		return w.Debit(entryID, tx.ID(), cmd.Money, agora)
-	case wagering.Win:
+	case wallet.Credit:
 		return w.Credit(entryID, tx.ID(), cmd.Money, agora)
 	default:
 		return nil, fmt.Errorf("%w: %s sem movimentação definida", ErrInvalidCommand, cmd.Kind)
+	}
+}
+
+// movementDirection devolve o sentido fixo dos tipos que não dependem de
+// referência. Reversões não aparecem aqui: o sentido delas vem do que estão
+// desfazendo.
+func movementDirection(kind wagering.Kind) wallet.Direction {
+	switch kind {
+	case wagering.Bet:
+		return wallet.Debit
+	case wagering.Win:
+		return wallet.Credit
+	default:
+		return ""
 	}
 }
 

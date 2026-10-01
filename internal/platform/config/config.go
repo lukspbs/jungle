@@ -19,9 +19,10 @@ var ErrInvalidConfig = errors.New("config: configuração inválida")
 
 // Config reúne a configuração do processo.
 type Config struct {
-	App      App
-	Database Database
-	HTTP     HTTP
+	App       App
+	Database  Database
+	HTTP      HTTP
+	Reference Reference
 }
 
 // App traz os metadados do processo.
@@ -61,6 +62,36 @@ type Database struct {
 	// contra um lock de carteira segurado indefinidamente por um cliente
 	// travado.
 	StatementTimeout time.Duration
+}
+
+// Reference traz a política de espera por referências ainda indisponíveis.
+//
+// Uma reversão pode chegar antes da transação que ela desfaz. O serviço aceita
+// a operação, registra a pendência e tenta de novo com recuo exponencial. O
+// prazo total e o teto de tentativas existem para que uma referência que nunca
+// chegue termine em recusa auditável, e não em pendência eterna.
+type Reference struct {
+	// TTL é o prazo total de espera. Esgotado, a operação é recusada com
+	// código de referência não encontrada.
+	TTL time.Duration
+
+	// MaxAttempts limita as tentativas. Vale em conjunto com o TTL: o que
+	// vencer primeiro encerra a espera.
+	MaxAttempts int
+
+	// InitialBackoff é o intervalo da primeira nova tentativa. Ele dobra a
+	// cada falha até MaxBackoff.
+	InitialBackoff time.Duration
+
+	// MaxBackoff limita o crescimento do recuo, para que uma pendência longa
+	// não fique com intervalos de horas.
+	MaxBackoff time.Duration
+
+	// PollInterval é o intervalo entre varreduras do worker.
+	PollInterval time.Duration
+
+	// BatchSize limita quantas pendências uma varredura reivindica.
+	BatchSize int
 }
 
 // HTTP traz a configuração do servidor.
@@ -108,6 +139,19 @@ func Load() (Config, error) {
 	cfg.Database.StatementTimeout, err = envDuration("DATABASE_STATEMENT_TIMEOUT", 10*time.Second)
 	collect(err)
 
+	cfg.Reference.TTL, err = envDuration("REFERENCE_TTL", 15*time.Minute)
+	collect(err)
+	cfg.Reference.MaxAttempts, err = envInt("REFERENCE_MAX_ATTEMPTS", 10)
+	collect(err)
+	cfg.Reference.InitialBackoff, err = envDuration("REFERENCE_INITIAL_BACKOFF", 2*time.Second)
+	collect(err)
+	cfg.Reference.MaxBackoff, err = envDuration("REFERENCE_MAX_BACKOFF", 2*time.Minute)
+	collect(err)
+	cfg.Reference.PollInterval, err = envDuration("REFERENCE_POLL_INTERVAL", 2*time.Second)
+	collect(err)
+	cfg.Reference.BatchSize, err = envInt("REFERENCE_BATCH_SIZE", 50)
+	collect(err)
+
 	cfg.HTTP.Port, err = envInt("HTTP_PORT", 8080)
 	collect(err)
 	cfg.HTTP.ReadHeaderTimeout, err = envDuration("HTTP_READ_HEADER_TIMEOUT", 5*time.Second)
@@ -146,6 +190,17 @@ func (c Config) validate() []string {
 		problems = append(problems, fmt.Sprintf(
 			"DATABASE_MIN_CONNS (%d) não pode exceder DATABASE_MAX_CONNS (%d)",
 			c.Database.MinConns, c.Database.MaxConns))
+	}
+	if c.Reference.MaxAttempts < 1 {
+		problems = append(problems, "REFERENCE_MAX_ATTEMPTS precisa ser ao menos 1")
+	}
+	if c.Reference.BatchSize < 1 {
+		problems = append(problems, "REFERENCE_BATCH_SIZE precisa ser ao menos 1")
+	}
+	if c.Reference.InitialBackoff > c.Reference.MaxBackoff {
+		problems = append(problems, fmt.Sprintf(
+			"REFERENCE_INITIAL_BACKOFF (%v) não pode exceder REFERENCE_MAX_BACKOFF (%v)",
+			c.Reference.InitialBackoff, c.Reference.MaxBackoff))
 	}
 	if c.HTTP.Port < 1 || c.HTTP.Port > 65535 {
 		problems = append(problems, fmt.Sprintf("HTTP_PORT fora do intervalo válido: %d", c.HTTP.Port))

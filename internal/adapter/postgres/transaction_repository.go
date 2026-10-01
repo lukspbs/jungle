@@ -113,6 +113,100 @@ func (r *TransactionRepository) FindByProviderAndIdempotencyKey(
 	return r.scanOne(ctx, query, providerID, idempotencyKey)
 }
 
+// FindProcessedReversal devolve a reversão bem-sucedida que já incide sobre uma
+// referência, se houver.
+//
+// O índice único do banco impede duas reversões do mesmo tipo. Esta consulta
+// cobre o caso que ele não cobre: um REFUND e um ROLLBACK sobre a mesma aposta
+// são tipos diferentes, passariam pelo índice, e devolveriam o débito duas
+// vezes. A verificação acontece sob o lock da carteira, então não há janela
+// entre consultar e decidir.
+func (r *TransactionRepository) FindProcessedReversal(
+	ctx context.Context, referenceTransactionID uuid.UUID,
+) (*wagering.WagerTransaction, error) {
+	const query = `
+		SELECT ` + transactionColumns + `
+		  FROM wager_transactions
+		 WHERE reference_transaction_id = $1
+		   AND status = 'PROCESSED'
+		   AND kind IN ('REFUND', 'ROLLBACK')
+		 LIMIT 1`
+	return r.scanOne(ctx, query, referenceTransactionID)
+}
+
+// ClaimPendingReferences reivindica operações cuja referência ainda não chegou.
+//
+// SKIP LOCKED permite que várias instâncias do worker dividam a fila. A
+// reivindicação já agenda a próxima tentativa, de modo que uma instância que
+// morra no meio não prenda o registro: ele volta a ficar elegível quando o
+// prazo recém-gravado vencer.
+//
+// O UPDATE devolve só os identificadores, e cada transação é relida pelo
+// caminho normal. Repetir aqui a montagem do snapshot duplicaria vinte colunas
+// e criaria um segundo lugar para a reidratação sair de sincronia com o schema.
+func (r *TransactionRepository) ClaimPendingReferences(
+	ctx context.Context, limit int, now, nextAttemptAt time.Time,
+) ([]*wagering.WagerTransaction, error) {
+	const query = `
+		UPDATE wager_transactions
+		   SET reference_attempts = reference_attempts + 1,
+		       reference_next_attempt_at = $1
+		 WHERE id IN (
+		       SELECT id FROM wager_transactions
+		        WHERE status = 'PENDING_REFERENCE'
+		          AND (reference_next_attempt_at IS NULL OR reference_next_attempt_at <= $2)
+		        ORDER BY reference_next_attempt_at NULLS FIRST
+		        LIMIT $3
+		        FOR UPDATE SKIP LOCKED
+		 )
+		 RETURNING id`
+
+	rows, err := r.db.Query(ctx, query, nextAttemptAt, now, limit)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: falha ao reivindicar pendências: %w", classify(err))
+	}
+
+	var ids []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("postgres: falha ao ler pendência: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	pendentes := make([]*wagering.WagerTransaction, 0, len(ids))
+	for _, id := range ids {
+		tx, err := r.FindByID(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		pendentes = append(pendentes, tx)
+	}
+	return pendentes, nil
+}
+
+// ReferenceExpiry devolve o prazo e as tentativas já gastas de uma pendência.
+func (r *TransactionRepository) ReferenceExpiry(
+	ctx context.Context, id uuid.UUID,
+) (attempts int, expiresAt time.Time, err error) {
+	const query = `
+		SELECT reference_attempts, COALESCE(reference_expires_at, 'infinity'::timestamptz)
+		  FROM wager_transactions WHERE id = $1`
+	if err := r.db.QueryRow(ctx, query, id).Scan(&attempts, &expiresAt); err != nil {
+		if noRows(err) {
+			return 0, time.Time{}, ErrTransactionNotFound
+		}
+		return 0, time.Time{}, fmt.Errorf("postgres: falha ao ler prazos da pendência: %w", classify(err))
+	}
+	return attempts, expiresAt, nil
+}
+
 // ScheduleReferenceRetry registra a próxima tentativa do worker de referências
 // pendentes.
 //

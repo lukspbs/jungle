@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -17,6 +18,15 @@ import (
 	"github.com/lukspbs/jungle/internal/domain/wallet"
 	"github.com/lukspbs/jungle/test/dbtest"
 )
+
+// politicaDeTeste usa prazos curtos para que os testes de expiração não
+// precisem esperar de verdade.
+var politicaDeTeste = app.ReferencePolicy{
+	TTL:            time.Minute,
+	MaxAttempts:    3,
+	InitialBackoff: 10 * time.Millisecond,
+	MaxBackoff:     100 * time.Millisecond,
+}
 
 type cenario struct {
 	store     *postgres.Store
@@ -46,7 +56,7 @@ func novoCenario(t *testing.T, saldo string) cenario {
 	}
 	return cenario{
 		store:     store,
-		processar: app.NewProcessWager(store, relogio, ids),
+		processar: app.NewProcessWager(store, relogio, ids, politicaDeTeste),
 		carteira:  res.Wallet,
 		prefixo:   uuid.NewString(),
 	}
