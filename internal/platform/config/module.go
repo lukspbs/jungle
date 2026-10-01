@@ -15,5 +15,7 @@ var Module = fx.Module("config",
 		func(c Config) Database { return c.Database },
 		func(c Config) HTTP { return c.HTTP },
 		func(c Config) Reference { return c.Reference },
+		func(c Config) SQS { return c.SQS },
+		func(c Config) Outbox { return c.Outbox },
 	),
 )

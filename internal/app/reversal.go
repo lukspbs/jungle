@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math"
 	"time"
 
 	"github.com/lukspbs/jungle/internal/adapter/postgres"
@@ -21,19 +20,22 @@ type ReferencePolicy struct {
 	MaxBackoff     time.Duration
 }
 
-// backoffFor devolve o recuo da próxima tentativa, dobrando a cada falha até o
-// teto. O teto existe para que uma pendência longa não acabe com intervalos de
-// horas, o que atrasaria a resolução quando a referência finalmente chegasse.
+// backoffFor dobra o recuo a cada tentativa até o teto.
+//
+// A duplicação é por deslocamento de bits, em aritmética inteira. math.Pow
+// resolveria, mas traria ponto flutuante para dentro do módulo sem necessidade,
+// e a trava automática do projeto proíbe float em qualquer lugar — não só onde
+// há dinheiro. Um teto de deslocamento evita estouro em contagens absurdas.
 func (p ReferencePolicy) backoffFor(attempts int) time.Duration {
 	if attempts < 1 {
 		attempts = 1
 	}
-	// 2^(n-1) com saturação, evitando estouro no deslocamento.
-	expoente := float64(attempts - 1)
-	if expoente > 32 {
+	const maxShift = 32
+	deslocamento := attempts - 1
+	if deslocamento > maxShift {
 		return p.MaxBackoff
 	}
-	recuo := time.Duration(float64(p.InitialBackoff) * math.Pow(2, expoente))
+	recuo := p.InitialBackoff << deslocamento
 	if recuo > p.MaxBackoff || recuo <= 0 {
 		return p.MaxBackoff
 	}

@@ -107,9 +107,28 @@ func (a api) doRaw(t *testing.T, metodo, caminho, corpo string, headers map[stri
 
 func decodificar(t *testing.T, raw []byte, destino any) {
 	t.Helper()
-	if err := json.Unmarshal(raw, destino); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	// UseNumber mantém números como json.Number em vez de convertê-los para
+	// ponto flutuante. Os números deste contrato são inteiros — versão da
+	// carteira, contagem de lançamentos — e não têm por que passar por float.
+	dec.UseNumber()
+	if err := dec.Decode(destino); err != nil {
 		t.Fatalf("resposta não é JSON válido (%s): %v", raw, err)
 	}
+}
+
+// inteiroJSON extrai um inteiro de um valor desserializado.
+func inteiroJSON(t *testing.T, v any) int64 {
+	t.Helper()
+	n, ok := v.(json.Number)
+	if !ok {
+		t.Fatalf("%v não é número JSON (%T)", v, v)
+	}
+	i, err := n.Int64()
+	if err != nil {
+		t.Fatalf("%v não é inteiro: %v", v, err)
+	}
+	return i
 }
 
 // abreCarteira cria uma carteira pela API e devolve o corpo da resposta.
@@ -158,8 +177,8 @@ func TestAberturaDeCarteiraPelaAPI(t *testing.T) {
 	if res["playerId"] != playerID {
 		t.Errorf("playerId = %v", res["playerId"])
 	}
-	if v := res["version"]; v != float64(1) {
-		t.Errorf("version = %v, esperado 1", v)
+	if v := inteiroJSON(t, res["version"]); v != 1 {
+		t.Errorf("version = %d, esperado 1", v)
 	}
 	saldo := res["balance"].(map[string]any)
 	if saldo["amount"] != "1000.00" || saldo["currency"] != "BRL" {
@@ -459,8 +478,8 @@ func TestConsultas(t *testing.T) {
 		if res["difference"].(map[string]any)["amount"] != "0.00" {
 			t.Errorf("difference = %v", res["difference"])
 		}
-		if res["checkedEntries"] != float64(6) {
-			t.Errorf("checkedEntries = %v, esperado 6", res["checkedEntries"])
+		if n := inteiroJSON(t, res["checkedEntries"]); n != 6 {
+			t.Errorf("checkedEntries = %d, esperado 6", n)
 		}
 	})
 }

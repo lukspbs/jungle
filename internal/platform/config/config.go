@@ -23,6 +23,8 @@ type Config struct {
 	Database  Database
 	HTTP      HTTP
 	Reference Reference
+	SQS       SQS
+	Outbox    Outbox
 }
 
 // App traz os metadados do processo.
@@ -62,6 +64,52 @@ type Database struct {
 	// contra um lock de carteira segurado indefinidamente por um cliente
 	// travado.
 	StatementTimeout time.Duration
+}
+
+// SQS traz o acesso à mensageria.
+type SQS struct {
+	// Endpoint aponta para o emulador local. Vazio usa o endpoint real da AWS,
+	// resolvido pela região.
+	Endpoint string
+	Region   string
+
+	// InboundQueueURL é a fila FIFO de operações recebidas de provedores.
+	InboundQueueURL string
+
+	// OutboundQueueURL é o destino dos eventos de integração publicados.
+	OutboundQueueURL string
+
+	// MaxMessages é quantas mensagens cada recebimento busca.
+	MaxMessages int
+
+	// WaitTime é o long polling. Ele troca varredura ocupada por espera no
+	// servidor: sem isso o consumidor queimaria requisições contra fila vazia.
+	WaitTime time.Duration
+
+	// VisibilityTimeout é quanto tempo a mensagem fica invisível depois de
+	// recebida. Precisa cobrir o processamento, ou a mensagem é reentregue
+	// enquanto ainda está sendo tratada.
+	VisibilityTimeout time.Duration
+}
+
+// Outbox traz a política de publicação dos eventos de integração.
+type Outbox struct {
+	// BatchSize limita quantos eventos uma varredura reivindica.
+	BatchSize int
+
+	// Lease é por quanto tempo um evento reivindicado fica reservado. Se a
+	// instância morrer antes de publicar, ele volta à fila quando vencer.
+	Lease time.Duration
+
+	// PollInterval é o intervalo entre varreduras.
+	PollInterval time.Duration
+
+	// InitialBackoff e MaxBackoff governam a nova tentativa após falha de
+	// publicação. Não há limite de tentativas: um evento financeiro que não
+	// consegue ser publicado é problema operacional, e descartá-lo perderia
+	// dado. O atraso da outbox é a métrica que denuncia a situação.
+	InitialBackoff time.Duration
+	MaxBackoff     time.Duration
 }
 
 // Reference traz a política de espera por referências ainda indisponíveis.
@@ -139,6 +187,28 @@ func Load() (Config, error) {
 	cfg.Database.StatementTimeout, err = envDuration("DATABASE_STATEMENT_TIMEOUT", 10*time.Second)
 	collect(err)
 
+	cfg.SQS.Endpoint = envOr("SQS_ENDPOINT", "")
+	cfg.SQS.Region = envOr("AWS_REGION", "us-east-1")
+	cfg.SQS.InboundQueueURL = envOr("SQS_INBOUND_QUEUE_URL", "")
+	cfg.SQS.OutboundQueueURL = envOr("SQS_OUTBOUND_QUEUE_URL", "")
+	cfg.SQS.MaxMessages, err = envInt("SQS_MAX_MESSAGES", 10)
+	collect(err)
+	cfg.SQS.WaitTime, err = envDuration("SQS_WAIT_TIME", 20*time.Second)
+	collect(err)
+	cfg.SQS.VisibilityTimeout, err = envDuration("SQS_VISIBILITY_TIMEOUT", 30*time.Second)
+	collect(err)
+
+	cfg.Outbox.BatchSize, err = envInt("OUTBOX_BATCH_SIZE", 50)
+	collect(err)
+	cfg.Outbox.Lease, err = envDuration("OUTBOX_LEASE", 30*time.Second)
+	collect(err)
+	cfg.Outbox.PollInterval, err = envDuration("OUTBOX_POLL_INTERVAL", time.Second)
+	collect(err)
+	cfg.Outbox.InitialBackoff, err = envDuration("OUTBOX_INITIAL_BACKOFF", time.Second)
+	collect(err)
+	cfg.Outbox.MaxBackoff, err = envDuration("OUTBOX_MAX_BACKOFF", time.Minute)
+	collect(err)
+
 	cfg.Reference.TTL, err = envDuration("REFERENCE_TTL", 15*time.Minute)
 	collect(err)
 	cfg.Reference.MaxAttempts, err = envInt("REFERENCE_MAX_ATTEMPTS", 10)
@@ -190,6 +260,22 @@ func (c Config) validate() []string {
 		problems = append(problems, fmt.Sprintf(
 			"DATABASE_MIN_CONNS (%d) não pode exceder DATABASE_MAX_CONNS (%d)",
 			c.Database.MinConns, c.Database.MaxConns))
+	}
+	if c.SQS.MaxMessages < 1 || c.SQS.MaxMessages > 10 {
+		problems = append(problems, fmt.Sprintf(
+			"SQS_MAX_MESSAGES precisa estar entre 1 e 10, recebido %d", c.SQS.MaxMessages))
+	}
+	if c.SQS.WaitTime > 20*time.Second {
+		problems = append(problems, fmt.Sprintf(
+			"SQS_WAIT_TIME não pode exceder 20s, limite do long polling; recebido %v", c.SQS.WaitTime))
+	}
+	if c.Outbox.BatchSize < 1 {
+		problems = append(problems, "OUTBOX_BATCH_SIZE precisa ser ao menos 1")
+	}
+	if c.Outbox.InitialBackoff > c.Outbox.MaxBackoff {
+		problems = append(problems, fmt.Sprintf(
+			"OUTBOX_INITIAL_BACKOFF (%v) não pode exceder OUTBOX_MAX_BACKOFF (%v)",
+			c.Outbox.InitialBackoff, c.Outbox.MaxBackoff))
 	}
 	if c.Reference.MaxAttempts < 1 {
 		problems = append(problems, "REFERENCE_MAX_ATTEMPTS precisa ser ao menos 1")

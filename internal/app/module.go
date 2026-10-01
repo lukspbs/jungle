@@ -23,6 +23,7 @@ var Module = fx.Module("app",
 		NewQueries,
 		NewReadiness,
 		newReferenceWorker,
+		newOutboxPublisher,
 	),
 )
 
@@ -40,4 +41,12 @@ func newReferenceWorker(
 	policy ReferencePolicy, cfg config.Reference,
 ) *ReferenceWorker {
 	return NewReferenceWorker(processar, store, clock, policy, cfg.BatchSize, cfg.PollInterval)
+}
+
+func newOutboxPublisher(
+	store *postgres.Store, publisher EventPublisher, clock Clock,
+	app config.App, cfg config.Outbox,
+) *OutboxPublisher {
+	return NewOutboxPublisher(store, publisher, clock, app.InstanceID,
+		cfg.BatchSize, cfg.Lease, cfg.PollInterval, cfg.InitialBackoff, cfg.MaxBackoff)
 }

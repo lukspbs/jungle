@@ -15,6 +15,7 @@ import (
 
 	adapterhttp "github.com/lukspbs/jungle/internal/adapter/http"
 	"github.com/lukspbs/jungle/internal/adapter/postgres"
+	adaptersqs "github.com/lukspbs/jungle/internal/adapter/sqs"
 	"github.com/lukspbs/jungle/internal/app"
 	"github.com/lukspbs/jungle/internal/platform/config"
 	"github.com/lukspbs/jungle/internal/platform/worker"
@@ -33,6 +34,7 @@ func Modules() fx.Option {
 		config.Module,
 		postgres.Module,
 		app.Module,
+		adaptersqs.Module,
 		adapterhttp.Module,
 		worker.Module,
 
