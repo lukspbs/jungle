@@ -7,6 +7,8 @@
 package main
 
 import (
+	"fmt"
+	"net/http"
 	"os"
 	"time"
 
@@ -22,7 +24,35 @@ import (
 )
 
 func main() {
+	// A imagem final é distroless: não há shell nem curl para um healthcheck
+	// do Docker. O próprio binário faz a sondagem quando chamado com --health,
+	// o que evita acrescentar um utilitário só para isso.
+	if len(os.Args) > 1 && os.Args[1] == "--health" {
+		os.Exit(probe())
+	}
 	fx.New(Modules()).Run()
+}
+
+// probe consulta o readiness local e devolve o código de saída.
+func probe() int {
+	porta := os.Getenv("HTTP_PORT")
+	if porta == "" {
+		porta = "8080"
+	}
+
+	cliente := &http.Client{Timeout: 3 * time.Second}
+	res, err := cliente.Get("http://127.0.0.1:" + porta + "/health/ready")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "health: %v\n", err)
+		return 1
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusOK {
+		fmt.Fprintf(os.Stderr, "health: readiness devolveu %d\n", res.StatusCode)
+		return 1
+	}
+	return 0
 }
 
 // Modules reúne a composição.

@@ -76,6 +76,20 @@ type Auth struct {
 	// Audience é o identificador desta API no IdP. Tokens emitidos para outro
 	// serviço do mesmo realm são recusados.
 	Audience string
+
+	// JWKSURL é onde buscar as chaves públicas, quando o endereço do emissor
+	// não é alcançável pela aplicação.
+	//
+	// Em container isso é a regra, não a exceção. O Keycloak emite tokens com
+	// iss igual à URL pela qual os clientes o alcançam — localhost:8081 — e o
+	// documento de descoberta repete esse endereço no jwks_uri. Dentro da rede
+	// do Compose, localhost:8081 é a própria aplicação, então seguir a
+	// descoberta buscaria as chaves no lugar errado.
+	//
+	// Informar o JWKS explicitamente resolve sem adivinhação: a aplicação busca
+	// onde consegue alcançar, e continua verificando o claim iss contra
+	// IssuerURL. Vazio, a descoberta a partir do emissor é usada.
+	JWKSURL string
 }
 
 // SQS traz o acesso à mensageria.
@@ -203,6 +217,7 @@ func Load() (Config, error) {
 	collect(err)
 	cfg.Auth.IssuerURL = authIssuer
 	cfg.Auth.Audience = envOr("AUTH_AUDIENCE", "jungle-api")
+	cfg.Auth.JWKSURL = envOr("AUTH_JWKS_URL", "")
 
 	cfg.SQS.Endpoint = envOr("SQS_ENDPOINT", "")
 	cfg.SQS.Region = envOr("AWS_REGION", "us-east-1")

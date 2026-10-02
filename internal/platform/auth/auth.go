@@ -96,20 +96,23 @@ type Verifier struct {
 // aplicação de subir, em vez de deixá-la aceitar requisições que não consegue
 // autenticar.
 func NewVerifier(ctx context.Context, cfg config.Auth) (*Verifier, error) {
-	provider, err := oidc.NewProvider(ctx, cfg.IssuerURL)
-	if err != nil {
-		return nil, fmt.Errorf("auth: falha ao descobrir o emissor %s: %w", cfg.IssuerURL, err)
+	// A audiência é sempre verificada: um token emitido para outro serviço do
+	// mesmo realm não serve aqui.
+	config := &oidc.Config{ClientID: cfg.Audience, SkipClientIDCheck: false}
+
+	// Com o JWKS informado, as chaves vêm de onde a aplicação consegue
+	// alcançar, e o claim iss continua sendo verificado contra IssuerURL. Sem
+	// ele, a descoberta normal a partir do emissor resolve as duas coisas.
+	if cfg.JWKSURL != "" {
+		chaves := oidc.NewRemoteKeySet(ctx, cfg.JWKSURL)
+		return &Verifier{verifier: oidc.NewVerifier(cfg.IssuerURL, chaves, config)}, nil
 	}
 
-	return &Verifier{
-		verifier: provider.Verifier(&oidc.Config{
-			// A audiência é verificada: um token emitido para outro serviço do
-			// mesmo realm não serve aqui.
-			ClientID: cfg.Audience,
-			// Tokens de client_credentials não carregam nonce nem at_hash.
-			SkipClientIDCheck: false,
-		}),
-	}, nil
+	provider, err := oidc.NewProvider(ctx, cfg.IssuerURL)
+	if err != nil {
+		return nil, fmt.Errorf("auth: falha ao descobrir o emissor em %s: %w", cfg.IssuerURL, err)
+	}
+	return &Verifier{verifier: provider.Verifier(config)}, nil
 }
 
 // Verify valida o token e extrai a identidade.

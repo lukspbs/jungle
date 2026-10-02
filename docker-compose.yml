@@ -1,0 +1,148 @@
+# Ambiente local completo.
+#
+#   cp .env.example .env
+#   docker compose up --build
+#
+# Três instâncias da aplicação, para exercitar as garantias entre processos:
+#
+#   docker compose --profile multi up --build
+#
+# As imagens são fixadas por versão, não por latest. O localstack:latest virou
+# imagem licenciada em 2026 e passou a exigir token — fixar a 4 mantém o
+# ambiente reproduzível por quem for avaliar.
+
+name: jungle
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-jungle}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-jungle}
+      POSTGRES_DB: ${POSTGRES_DB:-jungle}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./docker/postgres:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      # pg_isready responde antes de o banco aceitar conexões durante a
+      # inicialização; a consulta real evita esse falso positivo.
+      test: ["CMD-SHELL", "psql -U $${POSTGRES_USER} -d $${POSTGRES_DB} -c 'SELECT 1' || exit 1"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  localstack:
+    image: localstack/localstack:4
+    environment:
+      SERVICES: sqs
+      AWS_DEFAULT_REGION: ${AWS_REGION:-us-east-1}
+    ports:
+      - "4566:4566"
+    volumes:
+      # Os scripts em ready.d rodam quando o LocalStack termina de subir.
+      - ./docker/localstack:/etc/localstack/init/ready.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "awslocal sqs get-queue-url --queue-name wager-events || exit 1"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN:-admin}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
+      KC_HEALTH_ENABLED: "true"
+      # O emissor é fixado para que o claim iss seja o mesmo venha a requisição
+      # de onde vier. Sem isso, um token obtido de fora declara localhost e um
+      # obtido de dentro declara keycloak, e a verificação recusaria um dos dois.
+      KC_HOSTNAME: http://localhost:8081
+      KC_HOSTNAME_STRICT: "false"
+      KC_HTTP_ENABLED: "true"
+    ports:
+      - "8081:8080"
+    volumes:
+      - ./docker/keycloak:/opt/keycloak/data/import:ro
+    healthcheck:
+      # A imagem não tem curl. O /dev/tcp do bash resolve, desde que o pedido
+      # use HTTP/1.0 — com 1.1 o servidor mantém a conexão aberta e a leitura
+      # nunca termina — e traga o cabeçalho Host, sem o qual o Keycloak não
+      # consegue montar as URLs do realm e responde 500.
+      #
+      # A consulta é ao realm, e não só à porta: ela confirma que a importação
+      # terminou, que é o que a aplicação precisa para subir.
+      test: ["CMD-SHELL", "timeout 3 bash -c 'exec 3<>/dev/tcp/127.0.0.1/8080; printf \"GET /realms/jungle HTTP/1.0\\r\\nHost: localhost:8081\\r\\n\\r\\n\" >&3; grep -q \"200 OK\" <&3'"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+
+  # O schema é aplicado uma vez, antes de qualquer instância subir. Separar
+  # isso da aplicação evita que três instâncias disputem a migração na partida.
+  migrate:
+    build: .
+    entrypoint: ["/usr/local/bin/migrate", "up"]
+    env_file: [.env]
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+    depends_on:
+      postgres: { condition: service_healthy }
+    restart: "no"
+
+  api:
+    build: .
+    env_file: [.env]
+    environment:
+      APP_INSTANCE_ID: api-1
+      HTTP_PORT: 8080
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:   { condition: service_healthy }
+      localstack: { condition: service_healthy }
+      keycloak:   { condition: service_healthy }
+      migrate:    { condition: service_completed_successfully }
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/api", "--health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  # As duas instâncias extras existem para demonstrar as garantias entre
+  # processos independentes: cada uma tem o próprio pool e a própria memória, e
+  # a coordenação acontece só pelo banco.
+  api-2:
+    profiles: [multi]
+    build: .
+    env_file: [.env]
+    environment:
+      APP_INSTANCE_ID: api-2
+      HTTP_PORT: 8080
+    ports:
+      - "8090:8080"
+    depends_on:
+      postgres:   { condition: service_healthy }
+      localstack: { condition: service_healthy }
+      keycloak:   { condition: service_healthy }
+      migrate:    { condition: service_completed_successfully }
+
+  api-3:
+    profiles: [multi]
+    build: .
+    env_file: [.env]
+    environment:
+      APP_INSTANCE_ID: api-3
+      HTTP_PORT: 8080
+    ports:
+      - "8091:8080"
+    depends_on:
+      postgres:   { condition: service_healthy }
+      localstack: { condition: service_healthy }
+      keycloak:   { condition: service_healthy }
+      migrate:    { condition: service_completed_successfully }
+
+volumes:
+  postgres-data:
