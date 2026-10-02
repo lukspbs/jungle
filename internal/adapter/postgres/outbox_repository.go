@@ -121,20 +121,18 @@ func (r *OutboxRepository) Claim(
 // Entre a publicação e esta confirmação existe uma janela: se o processo cair
 // ali, o evento será republicado quando o lease vencer. É aceitável porque o
 // eventId é preservado, então o consumidor a jusante deduplica.
+//
+// Nenhuma linha afetada não é erro: significa que outra instância já confirmou
+// este evento depois de um lease vencido, e o estado desejado é justamente o
+// que já está lá.
 func (r *OutboxRepository) MarkPublished(ctx context.Context, eventID uuid.UUID, now time.Time) error {
 	const query = `
 		UPDATE outbox_events
 		   SET published_at = $1, locked_by = NULL, locked_until = NULL
 		 WHERE event_id = $2 AND published_at IS NULL`
 
-	tag, err := r.db.Exec(ctx, query, now, eventID)
-	if err != nil {
+	if _, err := r.db.Exec(ctx, query, now, eventID); err != nil {
 		return fmt.Errorf("postgres: falha ao confirmar publicação: %w", classify(err))
-	}
-	if tag.RowsAffected() == 0 {
-		// Já publicado por outra instância depois de um lease vencido. Não é
-		// erro: o resultado desejado é o que já está lá.
-		return nil
 	}
 	return nil
 }

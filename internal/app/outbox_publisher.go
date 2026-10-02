@@ -113,15 +113,25 @@ func (p *OutboxPublisher) Sweep(ctx context.Context) (PublishResult, error) {
 			// A publicação falhou: devolve à fila com recuo. O evento continua
 			// lá, e nenhuma tentativa é descartada.
 			proxima := agora.Add(p.backoffFor(rec.Attempts))
-			_ = p.store.Read().Outbox.Reschedule(ctx, rec.EventID, proxima)
-			resultado.Failed++
-			p.metrics.ObserveOutboxPublish(false)
-			p.logger.WarnContext(ctx, "publicação falhou, evento reagendado",
+			atributos := []any{
 				slog.String(logging.FieldEventID, rec.EventID.String()),
 				slog.String("eventType", rec.EventType),
 				slog.String(logging.FieldCorrelationID, rec.CorrelationID),
 				slog.Int("attempts", rec.Attempts),
-				slog.String("error", err.Error()))
+				slog.String("error", err.Error()),
+			}
+			// O reagendamento é o que devolve o evento à fila mais cedo. Se ele
+			// também falhar, o lease vencendo ainda recupera o evento, mas o
+			// atraso passa a ser o do lease e não o do recuo calculado — e isso
+			// precisa aparecer, ou a espera extra fica sem explicação no log.
+			if errReagendar := p.store.Read().Outbox.Reschedule(
+				ctx, rec.EventID, proxima); errReagendar != nil {
+				atributos = append(atributos,
+					slog.String("rescheduleError", errReagendar.Error()))
+			}
+			resultado.Failed++
+			p.metrics.ObserveOutboxPublish(false)
+			p.logger.WarnContext(ctx, "publicação falhou, evento reagendado", atributos...)
 			continue
 		}
 

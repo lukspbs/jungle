@@ -4,12 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
+	"runtime/debug"
 	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/lukspbs/jungle/internal/domain/wagering"
+	"github.com/lukspbs/jungle/internal/platform/logging"
 )
 
 // correlationHeader carrega o identificador que amarra a operação ponta a
@@ -112,13 +115,32 @@ func WithCorrelationID(next http.Handler) http.Handler {
 // Um panic num handler derrubaria a conexão sem resposta e, sem isto, poderia
 // derrubar o processo inteiro. As rejeições de negócio nunca chegam aqui: elas
 // são erros devolvidos, não panics.
-func Recover(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		defer func() {
-			if recuperado := recover(); recuperado != nil {
+//
+// O valor recuperado e a pilha vão para o log. Sem isso o panic virava um 500
+// silencioso: o operador via o código de resposta e não tinha como descobrir de
+// onde ele veio — e panic é exatamente o caso em que a pilha é a única pista.
+// O cliente continua recebendo só o correlationId, porque a pilha descreve o
+// interior do processo.
+func Recover(logger *slog.Logger) func(http.Handler) http.Handler {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			defer func() {
+				recuperado := recover()
+				if recuperado == nil {
+					return
+				}
+				logger.ErrorContext(r.Context(), "panic no handler",
+					slog.Any("panic", recuperado),
+					slog.String("method", r.Method),
+					slog.String("path", r.URL.Path),
+					slog.String(logging.FieldCorrelationID, correlationID(r)),
+					slog.String("stack", string(debug.Stack())))
 				writeError(w, r, errors.New("panic no handler"))
-			}
-		}()
-		next.ServeHTTP(w, r)
-	})
+			}()
+			next.ServeHTTP(w, r)
+		})
+	}
 }

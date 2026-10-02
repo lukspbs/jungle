@@ -54,33 +54,40 @@ func LogRequests(logger *slog.Logger, m *metrics.Metrics) func(http.Handler) htt
 			r = r.WithContext(ctx)
 
 			gravador := &statusRecorder{ResponseWriter: w}
-			next.ServeHTTP(gravador, r)
 
-			duracao := time.Since(inicio)
-			m.ObserveHTTP(r.Method, rota(r), strconv.Itoa(gravador.status), duracao.Seconds())
+			// O registro fica em defer para que nenhuma saída do handler
+			// escape dele. Se o bloco ficasse depois da chamada, um panic
+			// desenrolaria por cima e a requisição não apareceria em log
+			// nenhum — perdendo justamente a linha mais necessária.
+			defer func() {
+				duracao := time.Since(inicio)
+				m.ObserveHTTP(r.Method, rota(r), strconv.Itoa(gravador.status), duracao.Seconds())
 
-			atributos := []any{
-				slog.String("method", r.Method),
-				slog.String("route", rota(r)),
-				slog.Int("status", gravador.status),
-				slog.Int64(logging.FieldDurationMs, duracao.Milliseconds()),
-			}
-			if id, ok := identityOf(r); ok {
-				atributos = append(atributos, slog.String("client", id.ClientID))
-				if id.ProviderID != "" {
-					atributos = append(atributos, slog.String(logging.FieldProviderID, id.ProviderID))
+				atributos := []any{
+					slog.String("method", r.Method),
+					slog.String("route", rota(r)),
+					slog.Int("status", gravador.status),
+					slog.Int64(logging.FieldDurationMs, duracao.Milliseconds()),
 				}
-			}
+				if id, ok := identityOf(r); ok {
+					atributos = append(atributos, slog.String("client", id.ClientID))
+					if id.ProviderID != "" {
+						atributos = append(atributos, slog.String(logging.FieldProviderID, id.ProviderID))
+					}
+				}
 
-			registrador := logging.From(r.Context())
-			switch {
-			case gravador.status >= 500:
-				registrador.ErrorContext(r.Context(), "requisição falhou", atributos...)
-			case gravador.status >= 400:
-				registrador.WarnContext(r.Context(), "requisição recusada", atributos...)
-			default:
-				registrador.InfoContext(r.Context(), "requisição atendida", atributos...)
-			}
+				registrador := logging.From(r.Context())
+				switch {
+				case gravador.status >= 500 || gravador.status == 0:
+					registrador.ErrorContext(r.Context(), "requisição falhou", atributos...)
+				case gravador.status >= 400:
+					registrador.WarnContext(r.Context(), "requisição recusada", atributos...)
+				default:
+					registrador.InfoContext(r.Context(), "requisição atendida", atributos...)
+				}
+			}()
+
+			next.ServeHTTP(gravador, r)
 		})
 	}
 }

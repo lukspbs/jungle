@@ -16,10 +16,8 @@ import (
 // variáveis de caminho. Um roteador externo não traria nada que este contrato
 // precise, e traria uma dependência a mais para justificar.
 //
-// A ordem dos middlewares importa: a recuperação de panic fica por fora, para
-// que um panic no próprio middleware de correlação ainda vire resposta; o
-// correlationId fica logo dentro, para que todo log e toda resposta de erro o
-// tenham.
+// A ordem dos middlewares importa, e a razão de cada posição está junto da
+// composição no fim desta função.
 func NewRouter(
 	h *Handlers, verifier *auth.Verifier, logger *slog.Logger, m *metrics.Metrics,
 ) http.Handler {
@@ -49,10 +47,22 @@ func NewRouter(
 	// administrativa separada — a observação está no README.
 	mux.Handle("GET /metrics", promhttp.HandlerFor(m.Registry(), promhttp.HandlerOpts{}))
 
-	// A ordem: a recuperação de panic por fora, para que qualquer falha vire
-	// resposta; o correlationId logo dentro, para que toda linha de log e toda
-	// resposta de erro o carreguem; o log em seguida, para registrar também as
-	// requisições recusadas na autenticação; e a autenticação por último, mais
-	// perto dos handlers.
-	return Recover(WithCorrelationID(LogRequests(logger, m)(Authenticate(verifier)(mux))))
+	// A ordem, de fora para dentro:
+	//
+	// O correlationId primeiro, porque todos os outros dependem dele: o log, a
+	// mensagem de panic e o corpo de qualquer resposta de erro o carregam.
+	// Tê-lo por dentro da recuperação de panic deixava o 500 de um panic sair
+	// com "unknown" no corpo enquanto o header trazia o id real.
+	//
+	// O log em seguida, para registrar também o que a autenticação recusa.
+	//
+	// A recuperação de panic depois do log, e não antes: ela transforma o panic
+	// em 500 e devolve normalmente, então o log registra a requisição com o
+	// status que o cliente recebeu de fato. Por fora, o panic desenrolaria por
+	// cima do log. A troca é deixar um panic nos dois middlewares de cima sem
+	// resposta — eles não fazem nada que estoure, e o servidor da biblioteca
+	// padrão ainda isola a conexão.
+	//
+	// A autenticação por último, mais perto dos handlers.
+	return WithCorrelationID(LogRequests(logger, m)(Recover(logger)(Authenticate(verifier)(mux))))
 }
