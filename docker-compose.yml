@@ -83,7 +83,11 @@ services:
   # isso da aplicação evita que três instâncias disputem a migração na partida.
   migrate:
     build: .
-    entrypoint: ["/usr/local/bin/migrate", "up"]
+    # O entrypoint é só o binário, e o subcomando vem em command. Assim
+    # `docker compose run --rm migrate version` substitui o subcomando em vez de
+    # acrescentar um argumento ao `up`, que seria ignorado.
+    entrypoint: ["/usr/local/bin/migrate"]
+    command: ["up"]
     env_file: [.env]
     environment:
       DATABASE_URL: ${DATABASE_URL}
