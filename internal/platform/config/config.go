@@ -198,20 +198,7 @@ func Load() (Config, error) {
 		},
 	}
 
-	dbURL, err := required("DATABASE_URL")
-	collect(err)
-	cfg.Database.URL = dbURL
-
-	cfg.Database.MaxConns, err = envInt32("DATABASE_MAX_CONNS", 10)
-	collect(err)
-	cfg.Database.MinConns, err = envInt32("DATABASE_MIN_CONNS", 2)
-	collect(err)
-	cfg.Database.MaxConnLifetime, err = envDuration("DATABASE_MAX_CONN_LIFETIME", time.Hour)
-	collect(err)
-	cfg.Database.ConnectTimeout, err = envDuration("DATABASE_CONNECT_TIMEOUT", 5*time.Second)
-	collect(err)
-	cfg.Database.StatementTimeout, err = envDuration("DATABASE_STATEMENT_TIMEOUT", 10*time.Second)
-	collect(err)
+	cfg.Database = loadDatabase(collect)
 
 	authIssuer, err := required("AUTH_ISSUER_URL")
 	collect(err)
@@ -276,25 +263,90 @@ func Load() (Config, error) {
 	return cfg, nil
 }
 
+// LoadDatabase carrega e valida apenas a configuração de banco.
+//
+// Existe para o migrator, que só precisa do endereço do banco. Fazê-lo passar
+// por Load o obrigaria a declarar emissor de token e filas — variáveis que ele
+// não usa — e `go run ./cmd/migrate up` falharia por configuração irrelevante
+// ao que o comando faz.
+func LoadDatabase() (Database, error) {
+	var problems []string
+	collect := func(err error) {
+		if err != nil {
+			problems = append(problems, err.Error())
+		}
+	}
+
+	db := loadDatabase(collect)
+	if len(problems) == 0 {
+		problems = append(problems, db.validate()...)
+	}
+	if len(problems) > 0 {
+		return Database{}, fmt.Errorf("%w:\n  - %s", ErrInvalidConfig, strings.Join(problems, "\n  - "))
+	}
+	return db, nil
+}
+
+// loadDatabase lê a seção de banco do ambiente.
+func loadDatabase(collect func(error)) Database {
+	var (
+		db  Database
+		err error
+	)
+
+	db.URL, err = required("DATABASE_URL")
+	collect(err)
+	db.MaxConns, err = envInt32("DATABASE_MAX_CONNS", 10)
+	collect(err)
+	db.MinConns, err = envInt32("DATABASE_MIN_CONNS", 2)
+	collect(err)
+	db.MaxConnLifetime, err = envDuration("DATABASE_MAX_CONN_LIFETIME", time.Hour)
+	collect(err)
+	db.ConnectTimeout, err = envDuration("DATABASE_CONNECT_TIMEOUT", 5*time.Second)
+	collect(err)
+	db.StatementTimeout, err = envDuration("DATABASE_STATEMENT_TIMEOUT", 10*time.Second)
+	collect(err)
+
+	return db
+}
+
+// validate confere as regras da seção de banco.
+func (d Database) validate() []string {
+	var problems []string
+
+	if d.MaxConns < 1 {
+		problems = append(problems, "DATABASE_MAX_CONNS precisa ser ao menos 1")
+	}
+	if d.MinConns < 0 {
+		problems = append(problems, "DATABASE_MIN_CONNS não pode ser negativo")
+	}
+	if d.MinConns > d.MaxConns {
+		problems = append(problems, fmt.Sprintf(
+			"DATABASE_MIN_CONNS (%d) não pode exceder DATABASE_MAX_CONNS (%d)",
+			d.MinConns, d.MaxConns))
+	}
+	return problems
+}
+
 // validate reúne as regras que dependem de mais de um campo. Devolve todos os
 // problemas de uma vez: quem está subindo o ambiente prefere a lista inteira a
 // descobrir um erro por execução.
 func (c Config) validate() []string {
-	var problems []string
+	problems := c.Database.validate()
 
-	if c.Database.MaxConns < 1 {
-		problems = append(problems, "DATABASE_MAX_CONNS precisa ser ao menos 1")
-	}
-	if c.Database.MinConns < 0 {
-		problems = append(problems, "DATABASE_MIN_CONNS não pode ser negativo")
-	}
-	if c.Database.MinConns > c.Database.MaxConns {
-		problems = append(problems, fmt.Sprintf(
-			"DATABASE_MIN_CONNS (%d) não pode exceder DATABASE_MAX_CONNS (%d)",
-			c.Database.MinConns, c.Database.MaxConns))
-	}
 	if c.Auth.Audience == "" {
 		problems = append(problems, "AUTH_AUDIENCE não pode ser vazia")
+	}
+	// As duas filas são obrigatórias porque o consumidor e o publicador sobem
+	// sempre, sem condicional. Vazias, o consumidor falharia a cada ciclo e o
+	// publicador a cada evento, cada um gerando uma linha de erro por segundo
+	// para sempre — um processo que parece de pé e não processa nada. Recusar
+	// na partida é o comportamento que este pacote promete.
+	if c.SQS.InboundQueueURL == "" {
+		problems = append(problems, "SQS_INBOUND_QUEUE_URL é obrigatória")
+	}
+	if c.SQS.OutboundQueueURL == "" {
+		problems = append(problems, "SQS_OUTBOUND_QUEUE_URL é obrigatória")
 	}
 	if c.SQS.MaxMessages < 1 || c.SQS.MaxMessages > 10 {
 		problems = append(problems, fmt.Sprintf(

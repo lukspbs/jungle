@@ -44,7 +44,23 @@ func ambienteValido(t *testing.T) int {
 	t.Setenv("HTTP_PORT", fmt.Sprint(porta))
 	t.Setenv("HTTP_SHUTDOWN_TIMEOUT", "5s")
 	t.Setenv("REFERENCE_POLL_INTERVAL", "50ms")
+
+	// As filas são obrigatórias na configuração. O teste de composição não
+	// precisa de uma fila que responda — ele monta o grafo e encerra, e o
+	// consumidor é interrompido antes de completar um ciclo — mas precisa de
+	// endereços, porque é isso que a validação exige.
+	t.Setenv("SQS_INBOUND_QUEUE_URL",
+		valorOu("TEST_SQS_INBOUND_QUEUE_URL", "http://127.0.0.1:4566/000000000000/composicao.fifo"))
+	t.Setenv("SQS_OUTBOUND_QUEUE_URL",
+		valorOu("TEST_SQS_OUTBOUND_QUEUE_URL", "http://127.0.0.1:4566/000000000000/composicao"))
 	return porta
+}
+
+func valorOu(chave, padrao string) string {
+	if v := os.Getenv(chave); v != "" {
+		return v
+	}
+	return padrao
 }
 
 // TestGrafoDeDependenciasEhValido confere a composição sem construir nada.

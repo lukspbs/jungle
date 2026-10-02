@@ -89,8 +89,8 @@ As que mais importam:
 | `AUTH_ISSUER_URL` | — | obrigatória; o emissor que os tokens declaram |
 | `AUTH_JWKS_URL` | vazio | onde buscar as chaves, quando o emissor não é alcançável pela aplicação |
 | `AUTH_AUDIENCE` | `jungle-api` | audiência exigida nos tokens |
-| `SQS_INBOUND_QUEUE_URL` | vazio | fila de operações recebidas |
-| `SQS_OUTBOUND_QUEUE_URL` | vazio | destino dos eventos de integração |
+| `SQS_INBOUND_QUEUE_URL` | — | obrigatória; fila de operações recebidas |
+| `SQS_OUTBOUND_QUEUE_URL` | — | obrigatória; destino dos eventos de integração |
 | `SQS_VISIBILITY_TIMEOUT` | `30s` | precisa cobrir o processamento de uma mensagem |
 | `OUTBOX_LEASE` | `30s` | reserva de um evento durante a publicação |
 | `REFERENCE_TTL` | `15m` | prazo total de espera por uma referência |
@@ -403,10 +403,11 @@ eventos, configuração — e a trava automática contra ponto flutuante.
 
 ### Com infraestrutura
 
-Suba o ambiente e carregue as variáveis dos testes:
+Suba **só as dependências**, sem a aplicação, e carregue as variáveis dos
+testes:
 
 ```sh
-docker compose up -d
+docker compose up -d postgres localstack keycloak migrate
 ```
 
 ```sh
@@ -414,12 +415,32 @@ set -a && source .env.test && set +a
 ```
 
 ```sh
-go test -race ./...
+go test -race -p 1 ./...
 ```
 
 O [`.env.test`](.env.test) aponta para os endereços expostos pelo Compose. As
-filas usadas são dedicadas (`test-*`), para que a suíte não dispute mensagens
-com o consumidor da aplicação em execução — assim ela passa com instâncias no ar.
+filas usadas são dedicadas (`test-*`), então a suíte não disputa mensagens com o
+consumidor da aplicação.
+
+Duas coisas nesse comando não são decorativas.
+
+**`-p 1`**, porque os testes de outbox precisam limpar os eventos pendentes
+antes de medir a fila — e essa limpeza é necessariamente global, já que existe
+para apagar o que execuções anteriores deixaram. O Go roda pacotes em paralelo
+por padrão, e aí uma limpeza no pacote `postgres` marca publicado o evento que
+um teste do pacote `app` acabou de gravar. Serializar os pacotes resolve; a
+suíte fica alguns segundos mais lenta e determinística.
+
+**A aplicação fora**, porque a fila dedicada não basta: o publicador da outbox
+de cada instância varre a tabela `outbox_events` do mesmo banco a cada segundo,
+e é a tabela — não a fila de destino — que os testes de publicação medem. Com
+instâncias no ar, uma delas reivindica o evento do teste antes do publicador do
+teste, e os cenários de lease, reagendamento e entrega única falham de forma
+intermitente. Não é defeito da aplicação: é a aplicação fazendo o seu trabalho
+sobre a mesma fila que o teste está inspecionando.
+
+Os cenários que precisam das instâncias no ar são os de múltiplas instâncias,
+logo abaixo, e eles conversam por HTTP em vez de inspecionar a outbox.
 
 Isso cobre, contra PostgreSQL, SQS e Keycloak reais: migrations, constraints,
 imutabilidade do ledger, atomicidade, inbox, reentrega, outbox concorrente,

@@ -87,6 +87,13 @@ func Pool(t *testing.T) *pgxpool.Pool {
 // eles seriam reivindicados primeiro e os eventos do teste nunca chegariam a
 // ser atendidos. Drenar é legítimo: a outbox é uma fila, e marcar publicado é
 // a operação normal dela.
+//
+// A drenagem é global, e não tem como não ser: ela existe justamente para
+// limpar o que outros deixaram. Isso faz dela incompatível com pacotes rodando
+// em paralelo — o Go roda pacotes concorrentemente por padrão, e uma drenagem
+// no pacote postgres marcaria publicado o evento que um teste do pacote app
+// acabou de gravar e ainda não publicou. Por isso a suíte com infraestrutura
+// roda com `-p 1`, e o README diz isso junto do comando.
 func DrainOutbox(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

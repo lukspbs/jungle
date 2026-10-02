@@ -17,6 +17,7 @@ var chaves = []string{
 	"DATABASE_URL", "DATABASE_MAX_CONNS", "DATABASE_MIN_CONNS",
 	"AUTH_ISSUER_URL", "AUTH_AUDIENCE", "AUTH_JWKS_URL",
 	"SQS_ENDPOINT", "SQS_MAX_MESSAGES", "SQS_WAIT_TIME", "SQS_VISIBILITY_TIMEOUT",
+	"SQS_INBOUND_QUEUE_URL", "SQS_OUTBOUND_QUEUE_URL",
 	"OUTBOX_BATCH_SIZE", "OUTBOX_LEASE", "OUTBOX_POLL_INTERVAL",
 	"OUTBOX_INITIAL_BACKOFF", "OUTBOX_MAX_BACKOFF",
 	"REFERENCE_TTL", "REFERENCE_MAX_ATTEMPTS", "REFERENCE_INITIAL_BACKOFF",
@@ -41,8 +42,10 @@ func ambiente(t *testing.T, vars map[string]string) {
 
 func TestCarregaComPadroes(t *testing.T) {
 	ambiente(t, map[string]string{
-		"DATABASE_URL":    "postgres://user:pass@localhost:5432/jungle?sslmode=disable",
-		"AUTH_ISSUER_URL": "http://localhost:8081/realms/jungle",
+		"DATABASE_URL":           "postgres://user:pass@localhost:5432/jungle?sslmode=disable",
+		"AUTH_ISSUER_URL":        "http://localhost:8081/realms/jungle",
+		"SQS_INBOUND_QUEUE_URL":  "http://localstack:4566/000000000000/wager-transactions.fifo",
+		"SQS_OUTBOUND_QUEUE_URL": "http://localstack:4566/000000000000/wager-events",
 	})
 
 	cfg, err := config.Load()
@@ -76,6 +79,8 @@ func TestSobrescreveComAmbiente(t *testing.T) {
 	ambiente(t, map[string]string{
 		"DATABASE_URL":               "postgres://localhost/jungle",
 		"AUTH_ISSUER_URL":            "http://localhost:8081/realms/jungle",
+		"SQS_INBOUND_QUEUE_URL":      "http://localstack:4566/000000000000/wager-transactions.fifo",
+		"SQS_OUTBOUND_QUEUE_URL":     "http://localstack:4566/000000000000/wager-events",
 		"DATABASE_MAX_CONNS":         "25",
 		"DATABASE_MIN_CONNS":         "5",
 		"DATABASE_STATEMENT_TIMEOUT": "3s",
@@ -175,6 +180,26 @@ func TestRecusaConfiguracaoInvalida(t *testing.T) {
 			},
 			"não é inteiro",
 		},
+		// O consumidor e o publicador sobem sem condicional: fila vazia é um
+		// processo que parece saudável e não consome nada.
+		{
+			"sem a fila de entrada",
+			map[string]string{
+				"DATABASE_URL":           "postgres://localhost/jungle",
+				"AUTH_ISSUER_URL":        "http://localhost/realms/jungle",
+				"SQS_OUTBOUND_QUEUE_URL": "http://localstack:4566/000000000000/wager-events",
+			},
+			"SQS_INBOUND_QUEUE_URL é obrigatória",
+		},
+		{
+			"sem a fila de saída",
+			map[string]string{
+				"DATABASE_URL":          "postgres://localhost/jungle",
+				"AUTH_ISSUER_URL":       "http://localhost/realms/jungle",
+				"SQS_INBOUND_QUEUE_URL": "http://localstack:4566/000000000000/wager-transactions.fifo",
+			},
+			"SQS_OUTBOUND_QUEUE_URL é obrigatória",
+		},
 	}
 
 	for _, tt := range tests {
@@ -192,6 +217,44 @@ func TestRecusaConfiguracaoInvalida(t *testing.T) {
 				t.Error("Load devolveu configuração utilizável junto com o erro")
 			}
 		})
+	}
+}
+
+// TestLoadDatabaseNaoExigeOResto cobre o migrator: ele só precisa do endereço
+// do banco, e exigir emissor ou filas faria uma reversão de schema depender de
+// variáveis que não têm relação com o que ela faz.
+func TestLoadDatabaseNaoExigeOResto(t *testing.T) {
+	ambiente(t, map[string]string{
+		"DATABASE_URL": "postgres://localhost/jungle",
+	})
+
+	db, err := config.LoadDatabase()
+	if err != nil {
+		t.Fatalf("LoadDatabase devolveu erro: %v", err)
+	}
+	if db.URL != "postgres://localhost/jungle" {
+		t.Errorf("URL = %q", db.URL)
+	}
+	if db.MaxConns != 10 || db.MinConns != 2 {
+		t.Errorf("pool = %d/%d, esperado 10/2", db.MaxConns, db.MinConns)
+	}
+
+	// E Load, no mesmo ambiente, continua recusando: a aplicação precisa do
+	// resto.
+	if _, err := config.Load(); !errors.Is(err, config.ErrInvalidConfig) {
+		t.Errorf("Load aceitou ambiente sem emissor nem filas: %v", err)
+	}
+}
+
+func TestLoadDatabaseValidaOPool(t *testing.T) {
+	ambiente(t, map[string]string{
+		"DATABASE_URL":       "postgres://localhost/jungle",
+		"DATABASE_MIN_CONNS": "50",
+		"DATABASE_MAX_CONNS": "5",
+	})
+
+	if _, err := config.LoadDatabase(); !errors.Is(err, config.ErrInvalidConfig) {
+		t.Fatalf("LoadDatabase devolveu %v, esperado ErrInvalidConfig", err)
 	}
 }
 

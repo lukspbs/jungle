@@ -33,12 +33,15 @@ func run(args []string) error {
 		return errors.New("comando obrigatório: up, down, steps ou version")
 	}
 
-	cfg, err := config.Load()
+	// Só a seção de banco: este comando não fala com fila nem com IdP, e
+	// exigir a configuração inteira faria uma reversão de schema depender de
+	// variáveis que não têm relação com o que ela faz.
+	db, err := config.LoadDatabase()
 	if err != nil {
 		return err
 	}
 
-	migrator, err := postgres.NewMigrator(cfg.Database.URL)
+	migrator, err := postgres.NewMigrator(db.URL)
 	if err != nil {
 		return err
 	}
