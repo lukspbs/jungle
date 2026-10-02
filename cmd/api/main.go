@@ -8,6 +8,7 @@ package main
 
 import (
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"time"
@@ -20,6 +21,7 @@ import (
 	adaptersqs "github.com/lukspbs/jungle/internal/adapter/sqs"
 	"github.com/lukspbs/jungle/internal/app"
 	"github.com/lukspbs/jungle/internal/platform/config"
+	"github.com/lukspbs/jungle/internal/platform/logging"
 	"github.com/lukspbs/jungle/internal/platform/worker"
 )
 
@@ -62,6 +64,7 @@ func probe() int {
 func Modules() fx.Option {
 	return fx.Options(
 		config.Module,
+		logging.Module,
 		postgres.Module,
 		app.Module,
 		adaptersqs.Module,
@@ -77,9 +80,12 @@ func Modules() fx.Option {
 	)
 }
 
-// fxLogger mantém o log de ciclo de vida do Fx em stderr, separado do log
-// estruturado da aplicação. Os eventos do Fx descrevem a montagem do grafo e o
-// encerramento, que interessam ao operador e não ao consumidor da API.
-func fxLogger() fxevent.Logger {
-	return &fxevent.ConsoleLogger{W: os.Stderr}
+// fxLogger manda os eventos de ciclo de vida do Fx para o mesmo logger
+// estruturado da aplicação.
+//
+// Eles descrevem a montagem do grafo e o encerramento — exatamente o que
+// interessa quando uma instância não sobe ou demora a encerrar — e em JSON
+// ficam consultáveis junto com o resto.
+func fxLogger(logger *slog.Logger) fxevent.Logger {
+	return &fxevent.SlogLogger{Logger: logger.With(slog.String("component", "fx"))}
 }

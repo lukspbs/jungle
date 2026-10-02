@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -69,8 +71,9 @@ func novaFila(t *testing.T, saldo string) fila {
 	// suíte por esse tempo.
 	cfg.WaitTime = time.Second
 	return fila{
-		consumidor: adaptersqs.NewConsumer(client, store, processar, clock, cfg),
-		client:     client, store: store, queueURL: cfg.InboundQueueURL,
+		consumidor: adaptersqs.NewConsumer(client, store, processar, clock,
+			slog.New(slog.NewJSONHandler(io.Discard, nil)), cfg),
+		client: client, store: store, queueURL: cfg.InboundQueueURL,
 		carteira: aberta.Wallet.ID(), jogador: aberta.Wallet.PlayerID(),
 		prefixo: uuid.NewString(),
 	}

@@ -64,7 +64,7 @@ func novoPublicador(
 ) (*app.OutboxPublisher, *relogioAjustavel) {
 	t.Helper()
 	relogio := novoRelogio(instante.Add(time.Minute))
-	return app.NewOutboxPublisher(store, destino, relogio, "instancia-"+t.Name(),
+	return app.NewOutboxPublisher(store, destino, relogio, loggerDeTeste(), "instancia-"+t.Name(),
 		50, 30*time.Second, time.Millisecond, time.Millisecond, 10*time.Millisecond), relogio
 }
 

@@ -1,6 +1,7 @@
 package http
 
 import (
+	"log/slog"
 	"net/http"
 
 	"github.com/lukspbs/jungle/internal/platform/auth"
@@ -16,7 +17,7 @@ import (
 // que um panic no próprio middleware de correlação ainda vire resposta; o
 // correlationId fica logo dentro, para que todo log e toda resposta de erro o
 // tenham.
-func NewRouter(h *Handlers, verifier *auth.Verifier) http.Handler {
+func NewRouter(h *Handlers, verifier *auth.Verifier, logger *slog.Logger) http.Handler {
 	mux := http.NewServeMux()
 
 	// Carteiras.
@@ -37,7 +38,10 @@ func NewRouter(h *Handlers, verifier *auth.Verifier) http.Handler {
 	mux.HandleFunc("GET /health/live", h.Live)
 	mux.HandleFunc("GET /health/ready", h.Ready)
 
-	// A autenticação fica dentro do correlationId para que a resposta 401
-	// também o carregue, e dentro da recuperação de panic pelo mesmo motivo.
-	return Recover(WithCorrelationID(Authenticate(verifier)(mux)))
+	// A ordem: a recuperação de panic por fora, para que qualquer falha vire
+	// resposta; o correlationId logo dentro, para que toda linha de log e toda
+	// resposta de erro o carreguem; o log em seguida, para registrar também as
+	// requisições recusadas na autenticação; e a autenticação por último, mais
+	// perto dos handlers.
+	return Recover(WithCorrelationID(LogRequests(logger)(Authenticate(verifier)(mux))))
 }

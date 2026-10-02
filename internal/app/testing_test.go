@@ -2,6 +2,8 @@ package app_test
 
 import (
 	"encoding/json"
+	"io"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -89,4 +91,10 @@ func (r *relogioAjustavel) Avanca(d time.Duration) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.t = r.t.Add(d)
+}
+
+// loggerDeTeste descarta a saída: a suíte afirma sobre estado persistido, não
+// sobre linhas de log.
+func loggerDeTeste() *slog.Logger {
+	return slog.New(slog.NewJSONHandler(io.Discard, nil))
 }

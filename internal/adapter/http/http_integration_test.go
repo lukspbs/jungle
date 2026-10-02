@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -38,6 +40,12 @@ type relogio struct{}
 
 func (relogio) Now() time.Time { return time.Now().UTC() }
 
+// loggerDeTeste descarta a saída: a suíte afirma sobre respostas, não sobre
+// linhas de log, e o ruído atrapalharia a leitura das falhas.
+func loggerDeTeste() *slog.Logger {
+	return slog.New(slog.NewJSONHandler(io.Discard, nil))
+}
+
 func novaAPI(t *testing.T) api {
 	t.Helper()
 	store := dbtest.Store(t)
@@ -55,7 +63,7 @@ func novaAPI(t *testing.T) api {
 		app.NewQueries(store),
 		app.NewReadiness(store),
 	)
-	servidor := httptest.NewServer(adapterhttp.NewRouter(handlers, authtest.Verifier(t)))
+	servidor := httptest.NewServer(adapterhttp.NewRouter(handlers, authtest.Verifier(t), loggerDeTeste()))
 	t.Cleanup(servidor.Close)
 
 	return api{

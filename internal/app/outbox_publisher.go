@@ -3,9 +3,11 @@ package app
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"time"
 
 	"github.com/lukspbs/jungle/internal/adapter/postgres"
+	"github.com/lukspbs/jungle/internal/platform/logging"
 )
 
 // EventPublisher entrega um evento ao destino externo.
@@ -26,6 +28,7 @@ type OutboxPublisher struct {
 	store      *postgres.Store
 	publisher  EventPublisher
 	clock      Clock
+	logger     *slog.Logger
 	instanceID string
 
 	batchSize      int
@@ -37,12 +40,18 @@ type OutboxPublisher struct {
 
 // NewOutboxPublisher monta o worker.
 func NewOutboxPublisher(
-	store *postgres.Store, publisher EventPublisher, clock Clock, instanceID string,
+	store *postgres.Store, publisher EventPublisher, clock Clock, logger *slog.Logger,
+	instanceID string,
 	batchSize int, lease, interval, initialBackoff, maxBackoff time.Duration,
 ) *OutboxPublisher {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return &OutboxPublisher{
-		store: store, publisher: publisher, clock: clock, instanceID: instanceID,
-		batchSize: batchSize, lease: lease, interval: interval,
+		store: store, publisher: publisher, clock: clock,
+		logger:     logger.With(slog.String("component", "outbox-publisher")),
+		instanceID: instanceID,
+		batchSize:  batchSize, lease: lease, interval: interval,
 		initialBackoff: initialBackoff, maxBackoff: maxBackoff,
 	}
 }
@@ -68,6 +77,8 @@ func (p *OutboxPublisher) Run(ctx context.Context) error {
 				if errors.Is(err, context.Canceled) {
 					return nil
 				}
+				p.logger.ErrorContext(ctx, "varredura da outbox falhou",
+					slog.String("error", err.Error()))
 				continue
 			}
 		}
@@ -92,6 +103,12 @@ func (p *OutboxPublisher) Sweep(ctx context.Context) (PublishResult, error) {
 			proxima := agora.Add(p.backoffFor(rec.Attempts))
 			_ = p.store.Read().Outbox.Reschedule(ctx, rec.EventID, proxima)
 			resultado.Failed++
+			p.logger.WarnContext(ctx, "publicação falhou, evento reagendado",
+				slog.String(logging.FieldEventID, rec.EventID.String()),
+				slog.String("eventType", rec.EventType),
+				slog.String(logging.FieldCorrelationID, rec.CorrelationID),
+				slog.Int("attempts", rec.Attempts),
+				slog.String("error", err.Error()))
 			continue
 		}
 
@@ -101,9 +118,16 @@ func (p *OutboxPublisher) Sweep(ctx context.Context) (PublishResult, error) {
 		// inverso, que perderia o evento.
 		if err := p.store.Read().Outbox.MarkPublished(ctx, rec.EventID, p.clock.Now()); err != nil {
 			resultado.Failed++
+			p.logger.ErrorContext(ctx, "evento publicado mas não confirmado",
+				slog.String(logging.FieldEventID, rec.EventID.String()),
+				slog.String("error", err.Error()))
 			continue
 		}
 		resultado.Published++
+		p.logger.DebugContext(ctx, "evento publicado",
+			slog.String(logging.FieldEventID, rec.EventID.String()),
+			slog.String("eventType", rec.EventType),
+			slog.String(logging.FieldCorrelationID, rec.CorrelationID))
 	}
 	return resultado, nil
 }

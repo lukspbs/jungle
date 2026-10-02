@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -95,6 +96,7 @@ type Consumer struct {
 	store     *postgres.Store
 	processar *app.ProcessWager
 	clock     app.Clock
+	logger    *slog.Logger
 
 	queueURL          string
 	maxMessages       int32
@@ -105,10 +107,14 @@ type Consumer struct {
 // NewConsumer monta o consumidor.
 func NewConsumer(
 	client *awssqs.Client, store *postgres.Store, processar *app.ProcessWager,
-	clock app.Clock, cfg config.SQS,
+	clock app.Clock, logger *slog.Logger, cfg config.SQS,
 ) *Consumer {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return &Consumer{
 		client: client, store: store, processar: processar, clock: clock,
+		logger:            logger.With(slog.String("component", "wager-consumer")),
 		queueURL:          cfg.InboundQueueURL,
 		maxMessages:       int32(cfg.MaxMessages),
 		waitTime:          int32(cfg.WaitTime.Seconds()),
@@ -143,6 +149,8 @@ func (c *Consumer) Run(ctx context.Context) error {
 			if errors.Is(err, context.Canceled) || ctx.Err() != nil {
 				return nil
 			}
+			c.logger.ErrorContext(ctx, "falha ao receber da fila",
+				slog.String("error", err.Error()))
 			// Falha ao buscar não derruba o consumidor: as mensagens continuam
 			// na fila e o próximo ciclo tenta de novo.
 			select {
@@ -169,19 +177,35 @@ func (c *Consumer) ReceiveOnce(ctx context.Context) (ConsumeResult, error) {
 
 	resultado := ConsumeResult{Received: len(out.Messages)}
 	for _, msg := range out.Messages {
+		inicio := c.clock.Now()
 		duplicada, err := c.handle(ctx, msg)
+		atributos := []any{
+			slog.String("sqsMessageId", aws.ToString(msg.MessageId)),
+			slog.Int64("durationMs", c.clock.Now().Sub(inicio).Milliseconds()),
+		}
+
 		switch {
 		case err != nil:
 			// Permanente ou transitório, a mensagem fica: a diferença é que a
 			// permanente vai esgotar maxReceiveCount e chegar à DLQ.
 			resultado.Failed++
 			resultado.Errors = append(resultado.Errors, err)
+			atributos = append(atributos,
+				slog.Bool("permanent", IsPermanent(err)),
+				slog.String("error", err.Error()))
+			if IsPermanent(err) {
+				c.logger.ErrorContext(ctx, "mensagem recusada em definitivo, seguirá para a DLQ", atributos...)
+			} else {
+				c.logger.WarnContext(ctx, "mensagem não tratada, será reentregue", atributos...)
+			}
 		case duplicada:
 			resultado.Duplicate++
 			c.delete(ctx, msg)
+			c.logger.InfoContext(ctx, "mensagem já processada, removida da fila", atributos...)
 		default:
 			resultado.Handled++
 			c.delete(ctx, msg)
+			c.logger.InfoContext(ctx, "mensagem processada", atributos...)
 		}
 	}
 	return resultado, nil

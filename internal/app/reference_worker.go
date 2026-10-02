@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/lukspbs/jungle/internal/adapter/postgres"
 	"github.com/lukspbs/jungle/internal/domain/events"
 	"github.com/lukspbs/jungle/internal/domain/wagering"
+	"github.com/lukspbs/jungle/internal/platform/logging"
 )
 
 // ReferenceWorker retoma as operações que ficaram aguardando uma referência.
@@ -21,6 +23,7 @@ type ReferenceWorker struct {
 	processar *ProcessWager
 	store     *postgres.Store
 	clock     Clock
+	logger    *slog.Logger
 	policy    ReferencePolicy
 	batchSize int
 	interval  time.Duration
@@ -28,11 +31,15 @@ type ReferenceWorker struct {
 
 // NewReferenceWorker monta o worker.
 func NewReferenceWorker(
-	processar *ProcessWager, store *postgres.Store, clock Clock,
+	processar *ProcessWager, store *postgres.Store, clock Clock, logger *slog.Logger,
 	policy ReferencePolicy, batchSize int, interval time.Duration,
 ) *ReferenceWorker {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return &ReferenceWorker{
 		processar: processar, store: store, clock: clock,
+		logger: logger.With(slog.String("component", "reference-worker")),
 		policy: policy, batchSize: batchSize, interval: interval,
 	}
 }
@@ -64,7 +71,11 @@ func (w *ReferenceWorker) Run(ctx context.Context) error {
 					return nil
 				}
 				// Uma varredura que falha não derruba o worker: a próxima tenta
-				// de novo, e as pendências continuam no banco.
+				// de novo, e as pendências continuam no banco. Mas ela precisa
+				// aparecer, ou um worker quebrado fica indistinguível de um
+				// worker sem trabalho.
+				w.logger.ErrorContext(ctx, "varredura de referências falhou",
+					slog.String("error", err.Error()))
 				continue
 			}
 		}
@@ -92,8 +103,16 @@ func (w *ReferenceWorker) Sweep(ctx context.Context) (SweepResult, error) {
 		if err != nil {
 			// Falhar numa pendência não aborta a varredura: as outras seguem,
 			// e esta volta na próxima.
+			w.logger.ErrorContext(ctx, "pendência não pôde ser retomada",
+				slog.String(logging.FieldTransactionID, pendente.ID().String()),
+				slog.String(logging.FieldProviderID, pendente.ProviderID()),
+				slog.String("error", err.Error()))
 			continue
 		}
+		w.logger.InfoContext(ctx, "pendência retomada",
+			slog.String(logging.FieldTransactionID, pendente.ID().String()),
+			slog.String(logging.FieldProviderID, pendente.ProviderID()),
+			slog.String(logging.FieldStatus, desfecho.String()))
 		switch desfecho {
 		case wagering.Processed:
 			resultado.Processed++

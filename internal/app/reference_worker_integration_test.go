@@ -32,7 +32,7 @@ func (c cenario) statusDe(t *testing.T, id uuid.UUID) *wagering.WagerTransaction
 func (c cenario) worker(t *testing.T, policy app.ReferencePolicy) (*app.ReferenceWorker, *relogioAjustavel) {
 	t.Helper()
 	relogio := novoRelogio(instante.Add(time.Second))
-	return app.NewReferenceWorker(c.processar, c.store, relogio, policy, 50, time.Millisecond), relogio
+	return app.NewReferenceWorker(c.processar, c.store, relogio, loggerDeTeste(), policy, 50, time.Millisecond), relogio
 }
 
 // TestWorkerConcluiAPendenciaQuandoAReferenciaChega é o cenário 7 da

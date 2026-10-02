@@ -1,6 +1,8 @@
 package app
 
 import (
+	"log/slog"
+
 	"go.uber.org/fx"
 
 	"github.com/lukspbs/jungle/internal/adapter/postgres"
@@ -37,16 +39,16 @@ func referencePolicyFrom(cfg config.Reference) ReferencePolicy {
 }
 
 func newReferenceWorker(
-	processar *ProcessWager, store *postgres.Store, clock Clock,
+	processar *ProcessWager, store *postgres.Store, clock Clock, logger *slog.Logger,
 	policy ReferencePolicy, cfg config.Reference,
 ) *ReferenceWorker {
-	return NewReferenceWorker(processar, store, clock, policy, cfg.BatchSize, cfg.PollInterval)
+	return NewReferenceWorker(processar, store, clock, logger, policy, cfg.BatchSize, cfg.PollInterval)
 }
 
 func newOutboxPublisher(
-	store *postgres.Store, publisher EventPublisher, clock Clock,
+	store *postgres.Store, publisher EventPublisher, clock Clock, logger *slog.Logger,
 	app config.App, cfg config.Outbox,
 ) *OutboxPublisher {
-	return NewOutboxPublisher(store, publisher, clock, app.InstanceID,
+	return NewOutboxPublisher(store, publisher, clock, logger, app.InstanceID,
 		cfg.BatchSize, cfg.Lease, cfg.PollInterval, cfg.InitialBackoff, cfg.MaxBackoff)
 }
