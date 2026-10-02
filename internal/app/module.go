@@ -8,6 +8,7 @@ import (
 	"github.com/lukspbs/jungle/internal/adapter/postgres"
 
 	"github.com/lukspbs/jungle/internal/platform/config"
+	"github.com/lukspbs/jungle/internal/platform/metrics"
 )
 
 // Module provê os casos de uso.
@@ -40,15 +41,15 @@ func referencePolicyFrom(cfg config.Reference) ReferencePolicy {
 
 func newReferenceWorker(
 	processar *ProcessWager, store *postgres.Store, clock Clock, logger *slog.Logger,
-	policy ReferencePolicy, cfg config.Reference,
+	m *metrics.Metrics, policy ReferencePolicy, cfg config.Reference,
 ) *ReferenceWorker {
-	return NewReferenceWorker(processar, store, clock, logger, policy, cfg.BatchSize, cfg.PollInterval)
+	return NewReferenceWorker(processar, store, clock, logger, m, policy, cfg.BatchSize, cfg.PollInterval)
 }
 
 func newOutboxPublisher(
 	store *postgres.Store, publisher EventPublisher, clock Clock, logger *slog.Logger,
-	app config.App, cfg config.Outbox,
+	m *metrics.Metrics, app config.App, cfg config.Outbox,
 ) *OutboxPublisher {
-	return NewOutboxPublisher(store, publisher, clock, logger, app.InstanceID,
+	return NewOutboxPublisher(store, publisher, clock, logger, m, app.InstanceID,
 		cfg.BatchSize, cfg.Lease, cfg.PollInterval, cfg.InitialBackoff, cfg.MaxBackoff)
 }

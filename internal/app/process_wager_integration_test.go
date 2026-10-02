@@ -16,6 +16,7 @@ import (
 	"github.com/lukspbs/jungle/internal/domain/money"
 	"github.com/lukspbs/jungle/internal/domain/wagering"
 	"github.com/lukspbs/jungle/internal/domain/wallet"
+	"github.com/lukspbs/jungle/internal/platform/metrics"
 	"github.com/lukspbs/jungle/test/dbtest"
 )
 
@@ -56,7 +57,7 @@ func novoCenario(t *testing.T, saldo string) cenario {
 	}
 	return cenario{
 		store:     store,
-		processar: app.NewProcessWager(store, relogio, ids, politicaDeTeste),
+		processar: app.NewProcessWager(store, relogio, ids, metrics.New(), politicaDeTeste),
 		carteira:  res.Wallet,
 		prefixo:   uuid.NewString(),
 	}

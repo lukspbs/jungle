@@ -22,6 +22,7 @@ import (
 	"github.com/lukspbs/jungle/internal/app"
 	"github.com/lukspbs/jungle/internal/platform/config"
 	"github.com/lukspbs/jungle/internal/platform/logging"
+	"github.com/lukspbs/jungle/internal/platform/metrics"
 	"github.com/lukspbs/jungle/internal/platform/worker"
 )
 
@@ -65,6 +66,7 @@ func Modules() fx.Option {
 	return fx.Options(
 		config.Module,
 		logging.Module,
+		metrics.Module,
 		postgres.Module,
 		app.Module,
 		adaptersqs.Module,

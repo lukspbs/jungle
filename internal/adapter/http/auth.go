@@ -13,12 +13,14 @@ const identityKey contextKey = "identity"
 
 // caminhosPublicos dispensam autenticação.
 //
-// Só os health checks. Um verificador de readiness de orquestrador não tem
-// credencial, e exigir uma transformaria indisponibilidade do IdP em
-// indisponibilidade aparente do serviço.
+// Health checks e coleta de métricas. Um verificador de readiness de
+// orquestrador não tem credencial, e exigir uma transformaria indisponibilidade
+// do IdP em indisponibilidade aparente do serviço; um coletor de métricas está
+// na mesma situação.
 var caminhosPublicos = map[string]bool{
 	"/health/live":  true,
 	"/health/ready": true,
+	"/metrics":      true,
 }
 
 // Authenticate valida o token e injeta a identidade no contexto.

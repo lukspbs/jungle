@@ -3,9 +3,11 @@ package http
 import (
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/lukspbs/jungle/internal/platform/logging"
+	"github.com/lukspbs/jungle/internal/platform/metrics"
 )
 
 // statusRecorder captura o código de resposta para o log.
@@ -42,7 +44,7 @@ func (r *statusRecorder) Write(b []byte) (int, error) {
 // A rota registrada é o padrão casado, não o caminho literal: agrupar por
 // "/wallets/{walletId}" permite medir latência por endpoint, o que o caminho
 // com o id de cada carteira não permitiria.
-func LogRequests(logger *slog.Logger) func(http.Handler) http.Handler {
+func LogRequests(logger *slog.Logger, m *metrics.Metrics) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			inicio := time.Now()
@@ -55,6 +57,8 @@ func LogRequests(logger *slog.Logger) func(http.Handler) http.Handler {
 			next.ServeHTTP(gravador, r)
 
 			duracao := time.Since(inicio)
+			m.ObserveHTTP(r.Method, rota(r), strconv.Itoa(gravador.status), duracao.Seconds())
+
 			atributos := []any{
 				slog.String("method", r.Method),
 				slog.String("route", rota(r)),

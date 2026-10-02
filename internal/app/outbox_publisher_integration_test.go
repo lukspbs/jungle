@@ -13,6 +13,7 @@ import (
 	adaptersqs "github.com/lukspbs/jungle/internal/adapter/sqs"
 	"github.com/lukspbs/jungle/internal/app"
 	"github.com/lukspbs/jungle/internal/domain/wagering"
+	"github.com/lukspbs/jungle/internal/platform/metrics"
 	"github.com/lukspbs/jungle/test/dbtest"
 	"github.com/lukspbs/jungle/test/sqstest"
 )
@@ -64,7 +65,7 @@ func novoPublicador(
 ) (*app.OutboxPublisher, *relogioAjustavel) {
 	t.Helper()
 	relogio := novoRelogio(instante.Add(time.Minute))
-	return app.NewOutboxPublisher(store, destino, relogio, loggerDeTeste(), "instancia-"+t.Name(),
+	return app.NewOutboxPublisher(store, destino, relogio, loggerDeTeste(), metrics.New(), "instancia-"+t.Name(),
 		50, 30*time.Second, time.Millisecond, time.Millisecond, 10*time.Millisecond), relogio
 }
 

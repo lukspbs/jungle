@@ -19,6 +19,7 @@ import (
 	"github.com/lukspbs/jungle/internal/domain/money"
 	"github.com/lukspbs/jungle/internal/domain/wagering"
 	"github.com/lukspbs/jungle/internal/platform/config"
+	"github.com/lukspbs/jungle/internal/platform/metrics"
 )
 
 // ConsumerName identifica este consumidor na inbox.
@@ -97,6 +98,7 @@ type Consumer struct {
 	processar *app.ProcessWager
 	clock     app.Clock
 	logger    *slog.Logger
+	metrics   *metrics.Metrics
 
 	queueURL          string
 	maxMessages       int32
@@ -107,14 +109,18 @@ type Consumer struct {
 // NewConsumer monta o consumidor.
 func NewConsumer(
 	client *awssqs.Client, store *postgres.Store, processar *app.ProcessWager,
-	clock app.Clock, logger *slog.Logger, cfg config.SQS,
+	clock app.Clock, logger *slog.Logger, m *metrics.Metrics, cfg config.SQS,
 ) *Consumer {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	if m == nil {
+		m = metrics.New()
+	}
 	return &Consumer{
 		client: client, store: store, processar: processar, clock: clock,
 		logger:            logger.With(slog.String("component", "wager-consumer")),
+		metrics:           m,
 		queueURL:          cfg.InboundQueueURL,
 		maxMessages:       int32(cfg.MaxMessages),
 		waitTime:          int32(cfg.WaitTime.Seconds()),
@@ -193,6 +199,7 @@ func (c *Consumer) ReceiveOnce(ctx context.Context) (ConsumeResult, error) {
 			atributos = append(atributos,
 				slog.Bool("permanent", IsPermanent(err)),
 				slog.String("error", err.Error()))
+			c.metrics.ObserveConsumerMessage("failed", IsPermanent(err))
 			if IsPermanent(err) {
 				c.logger.ErrorContext(ctx, "mensagem recusada em definitivo, seguirá para a DLQ", atributos...)
 			} else {
@@ -200,10 +207,12 @@ func (c *Consumer) ReceiveOnce(ctx context.Context) (ConsumeResult, error) {
 			}
 		case duplicada:
 			resultado.Duplicate++
+			c.metrics.ObserveConsumerMessage("duplicate", false)
 			c.delete(ctx, msg)
 			c.logger.InfoContext(ctx, "mensagem já processada, removida da fila", atributos...)
 		default:
 			resultado.Handled++
+			c.metrics.ObserveConsumerMessage("handled", false)
 			c.delete(ctx, msg)
 			c.logger.InfoContext(ctx, "mensagem processada", atributos...)
 		}
@@ -262,7 +271,7 @@ func (c *Consumer) handleOnce(
 			return nil
 		}
 
-		if _, err := c.processar.ExecuteWithin(ctx, r, cmd); err != nil {
+		if _, err := c.processar.ExecuteWithin(app.WithSource(ctx, "sqs"), r, cmd); err != nil {
 			// Comando inválido é permanente: reentregar não muda o conteúdo.
 			if errors.Is(err, app.ErrInvalidCommand) || errors.Is(err, app.ErrIdempotencyConflict) {
 				return fmt.Errorf("%w: %s", errPermanent, err)

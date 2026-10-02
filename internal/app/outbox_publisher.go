@@ -8,6 +8,7 @@ import (
 
 	"github.com/lukspbs/jungle/internal/adapter/postgres"
 	"github.com/lukspbs/jungle/internal/platform/logging"
+	"github.com/lukspbs/jungle/internal/platform/metrics"
 )
 
 // EventPublisher entrega um evento ao destino externo.
@@ -29,6 +30,7 @@ type OutboxPublisher struct {
 	publisher  EventPublisher
 	clock      Clock
 	logger     *slog.Logger
+	metrics    *metrics.Metrics
 	instanceID string
 
 	batchSize      int
@@ -41,15 +43,19 @@ type OutboxPublisher struct {
 // NewOutboxPublisher monta o worker.
 func NewOutboxPublisher(
 	store *postgres.Store, publisher EventPublisher, clock Clock, logger *slog.Logger,
-	instanceID string,
+	m *metrics.Metrics, instanceID string,
 	batchSize int, lease, interval, initialBackoff, maxBackoff time.Duration,
 ) *OutboxPublisher {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	if m == nil {
+		m = metrics.New()
+	}
 	return &OutboxPublisher{
 		store: store, publisher: publisher, clock: clock,
 		logger:     logger.With(slog.String("component", "outbox-publisher")),
+		metrics:    m,
 		instanceID: instanceID,
 		batchSize:  batchSize, lease: lease, interval: interval,
 		initialBackoff: initialBackoff, maxBackoff: maxBackoff,
@@ -89,6 +95,12 @@ func (p *OutboxPublisher) Run(ctx context.Context) error {
 func (p *OutboxPublisher) Sweep(ctx context.Context) (PublishResult, error) {
 	agora := p.clock.Now()
 
+	// O atraso é medido antes de publicar: é o estado que o operador precisa
+	// ver, e medir depois esconderia justamente o acúmulo.
+	if stats, err := p.store.Read().Outbox.Stats(ctx, agora); err == nil {
+		p.metrics.ObserveOutboxBacklog(stats.Pending, stats.OldestPendingAge.Seconds())
+	}
+
 	registros, err := p.store.Read().Outbox.Claim(
 		ctx, p.instanceID, p.batchSize, p.lease, agora)
 	if err != nil {
@@ -103,6 +115,7 @@ func (p *OutboxPublisher) Sweep(ctx context.Context) (PublishResult, error) {
 			proxima := agora.Add(p.backoffFor(rec.Attempts))
 			_ = p.store.Read().Outbox.Reschedule(ctx, rec.EventID, proxima)
 			resultado.Failed++
+			p.metrics.ObserveOutboxPublish(false)
 			p.logger.WarnContext(ctx, "publicação falhou, evento reagendado",
 				slog.String(logging.FieldEventID, rec.EventID.String()),
 				slog.String("eventType", rec.EventType),
@@ -124,6 +137,7 @@ func (p *OutboxPublisher) Sweep(ctx context.Context) (PublishResult, error) {
 			continue
 		}
 		resultado.Published++
+		p.metrics.ObserveOutboxPublish(true)
 		p.logger.DebugContext(ctx, "evento publicado",
 			slog.String(logging.FieldEventID, rec.EventID.String()),
 			slog.String("eventType", rec.EventType),

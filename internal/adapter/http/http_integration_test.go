@@ -16,6 +16,7 @@ import (
 
 	adapterhttp "github.com/lukspbs/jungle/internal/adapter/http"
 	"github.com/lukspbs/jungle/internal/app"
+	"github.com/lukspbs/jungle/internal/platform/metrics"
 	"github.com/lukspbs/jungle/test/authtest"
 	"github.com/lukspbs/jungle/test/dbtest"
 )
@@ -59,11 +60,11 @@ func novaAPI(t *testing.T) api {
 
 	handlers := adapterhttp.NewHandlers(
 		app.NewOpenWallet(store, clock, ids),
-		app.NewProcessWager(store, clock, ids, politica),
-		app.NewQueries(store),
+		app.NewProcessWager(store, clock, ids, metrics.New(), politica),
+		app.NewQueries(store, metrics.New()),
 		app.NewReadiness(store),
 	)
-	servidor := httptest.NewServer(adapterhttp.NewRouter(handlers, authtest.Verifier(t), loggerDeTeste()))
+	servidor := httptest.NewServer(adapterhttp.NewRouter(handlers, authtest.Verifier(t), loggerDeTeste(), metrics.New()))
 	t.Cleanup(servidor.Close)
 
 	return api{

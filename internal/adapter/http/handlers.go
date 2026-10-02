@@ -118,7 +118,7 @@ func (h *Handlers) ProcessWager(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res, err := h.processWager.Execute(r.Context(), cmd)
+	res, err := h.processWager.Execute(app.WithSource(r.Context(), "http"), cmd)
 	if err != nil {
 		writeError(w, r, err)
 		return

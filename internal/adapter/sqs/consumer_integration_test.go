@@ -18,6 +18,7 @@ import (
 	"github.com/lukspbs/jungle/internal/app"
 	"github.com/lukspbs/jungle/internal/domain/money"
 	"github.com/lukspbs/jungle/internal/domain/wagering"
+	"github.com/lukspbs/jungle/internal/platform/metrics"
 	"github.com/lukspbs/jungle/test/dbtest"
 	"github.com/lukspbs/jungle/test/sqstest"
 )
@@ -55,7 +56,7 @@ func novaFila(t *testing.T, saldo string) fila {
 		TTL: time.Minute, MaxAttempts: 3,
 		InitialBackoff: 10 * time.Millisecond, MaxBackoff: time.Second,
 	}
-	processar := app.NewProcessWager(store, clock, ids, politica)
+	processar := app.NewProcessWager(store, clock, ids, metrics.New(), politica)
 
 	valor, err := money.Parse(saldo, "BRL")
 	if err != nil {
@@ -72,7 +73,7 @@ func novaFila(t *testing.T, saldo string) fila {
 	cfg.WaitTime = time.Second
 	return fila{
 		consumidor: adaptersqs.NewConsumer(client, store, processar, clock,
-			slog.New(slog.NewJSONHandler(io.Discard, nil)), cfg),
+			slog.New(slog.NewJSONHandler(io.Discard, nil)), metrics.New(), cfg),
 		client: client, store: store, queueURL: cfg.InboundQueueURL,
 		carteira: aberta.Wallet.ID(), jogador: aberta.Wallet.PlayerID(),
 		prefixo: uuid.NewString(),
@@ -331,7 +332,7 @@ func TestMesmaOperacaoPorHttpEPorFila(t *testing.T) {
 		TTL: time.Minute, MaxAttempts: 3,
 		InitialBackoff: 10 * time.Millisecond, MaxBackoff: time.Second,
 	}
-	porHTTP := app.NewProcessWager(f.store, relogio{}, ids, politica)
+	porHTTP := app.NewProcessWager(f.store, relogio{}, ids, metrics.New(), politica)
 
 	externalID := f.prefixo + "-cruzada"
 	valor, _ := money.Parse("30.00", "BRL")

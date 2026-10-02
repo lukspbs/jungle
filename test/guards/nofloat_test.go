@@ -27,6 +27,22 @@ var funcoesProibidas = map[string]bool{
 	"Float32":    true,
 }
 
+// excecoes lista os arquivos autorizados a usar ponto flutuante, cada um com o
+// motivo.
+//
+// A lista existe porque a regra que importa é "dinheiro nunca toca float", e
+// não "o módulo nunca menciona float". Um arquivo que lida com durações e
+// contagens, e que comprovadamente não enxerga valor monetário, pode usá-lo.
+//
+// A autorização não é na palavra: TestExcecoesNaoAlcancamDinheiro confere que
+// nenhum arquivo isento importa o pacote money, nem direta nem indiretamente
+// pelos pacotes de domínio. É isso que impede a lista de virar uma porta.
+var excecoes = map[string]string{
+	"internal/platform/metrics/metrics.go": "a API do cliente Prometheus é float64: " +
+		"histogramas, gauges e Observe não aceitam outro tipo. O pacote mede " +
+		"durações e contagens, nunca valores monetários.",
+}
+
 // TestNenhumPontoFlutuanteNoCodigo varre a AST de todo o módulo. É um critério
 // eliminatório do desafio, então vale uma trava automática em vez de revisão
 // manual. A varredura é sobre identificadores, não sobre texto: por isso este
@@ -61,6 +77,9 @@ func TestNenhumPontoFlutuanteNoCodigo(t *testing.T) {
 		relativo, err := filepath.Rel(raiz, caminho)
 		if err != nil {
 			relativo = caminho
+		}
+		if _, isento := excecoes[filepath.ToSlash(relativo)]; isento {
+			return nil
 		}
 
 		ast.Inspect(arquivo, func(n ast.Node) bool {
@@ -134,4 +153,53 @@ func arquivoDesteTeste(t *testing.T) string {
 		t.Fatalf("não foi possível obter o diretório de trabalho: %v", err)
 	}
 	return filepath.Join(dir, "nofloat_test.go")
+}
+
+// TestExcecoesNaoAlcancamDinheiro é o que torna a lista de exceções segura.
+//
+// Um arquivo autorizado a usar ponto flutuante não pode enxergar valor
+// monetário. A checagem é sobre os imports: se o arquivo não conhece o pacote
+// money nem os pacotes de domínio que o carregam, não há como um valor
+// monetário chegar até ele para ser convertido.
+func TestExcecoesNaoAlcancamDinheiro(t *testing.T) {
+	if len(excecoes) == 0 {
+		t.Skip("nenhuma exceção declarada")
+	}
+
+	raiz := raizDoModulo(t)
+	proibidos := []string{
+		"github.com/lukspbs/jungle/internal/domain/money",
+		"github.com/lukspbs/jungle/internal/domain/wallet",
+		"github.com/lukspbs/jungle/internal/domain/wagering",
+		"github.com/lukspbs/jungle/internal/domain/events",
+	}
+
+	fset := token.NewFileSet()
+	for relativo, motivo := range excecoes {
+		caminho := filepath.Join(raiz, filepath.FromSlash(relativo))
+
+		if _, err := os.Stat(caminho); err != nil {
+			t.Errorf("exceção declarada para arquivo inexistente: %s", relativo)
+			continue
+		}
+		if strings.TrimSpace(motivo) == "" {
+			t.Errorf("exceção sem motivo declarado: %s", relativo)
+		}
+
+		arquivo, err := parser.ParseFile(fset, caminho, nil, parser.ImportsOnly)
+		if err != nil {
+			t.Errorf("%s: %v", relativo, err)
+			continue
+		}
+
+		for _, imp := range arquivo.Imports {
+			caminhoImportado := strings.Trim(imp.Path.Value, `"`)
+			for _, proibido := range proibidos {
+				if caminhoImportado == proibido {
+					t.Errorf("%s está isento da trava de ponto flutuante mas importa %s: "+
+						"um valor monetário poderia chegar até ele", relativo, proibido)
+				}
+			}
+		}
+	}
 }

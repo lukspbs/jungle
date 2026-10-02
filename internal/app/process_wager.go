@@ -13,6 +13,7 @@ import (
 	"github.com/lukspbs/jungle/internal/domain/money"
 	"github.com/lukspbs/jungle/internal/domain/wagering"
 	"github.com/lukspbs/jungle/internal/domain/wallet"
+	"github.com/lukspbs/jungle/internal/platform/metrics"
 )
 
 // ProcessWagerCommand é a operação recebida de um provedor, por HTTP ou SQS.
@@ -54,12 +55,18 @@ type ProcessWager struct {
 	store     *postgres.Store
 	clock     Clock
 	ids       IDs
+	metrics   *metrics.Metrics
 	reference ReferencePolicy
 }
 
 // NewProcessWager monta o caso de uso.
-func NewProcessWager(store *postgres.Store, clock Clock, ids IDs, reference ReferencePolicy) *ProcessWager {
-	return &ProcessWager{store: store, clock: clock, ids: ids, reference: reference}
+func NewProcessWager(
+	store *postgres.Store, clock Clock, ids IDs, m *metrics.Metrics, reference ReferencePolicy,
+) *ProcessWager {
+	if m == nil {
+		m = metrics.New()
+	}
+	return &ProcessWager{store: store, clock: clock, ids: ids, metrics: m, reference: reference}
 }
 
 // Execute processa a operação.
@@ -80,24 +87,65 @@ func (uc *ProcessWager) Execute(ctx context.Context, cmd ProcessWagerCommand) (P
 		return ProcessWagerResult{}, err
 	}
 
-	if res, encontrado, err := uc.replay(ctx, uc.store.Read(), cmd, fingerprint); err != nil || encontrado {
-		return res, err
+	inicio := uc.clock.Now()
+
+	res, encontrado, err := uc.replay(ctx, uc.store.Read(), cmd, fingerprint)
+	switch {
+	case errors.Is(err, ErrIdempotencyConflict):
+		uc.metrics.ObserveIdempotencyConflict()
+		return ProcessWagerResult{}, err
+	case err != nil:
+		return ProcessWagerResult{}, err
+	case encontrado:
+		uc.metrics.ObserveReplay(sourceOf(ctx))
+		return res, nil
 	}
 
-	res, err := uc.process(ctx, cmd, fingerprint)
+	res, err = uc.process(ctx, cmd, fingerprint)
 	if isDuplicate(err) {
 		// Corrida perdida: outra requisição com a mesma identidade gravou
 		// primeiro. O resultado correto é o que ela produziu.
 		res, encontrado, errReplay := uc.replay(ctx, uc.store.Read(), cmd, fingerprint)
 		if errReplay != nil {
+			if errors.Is(errReplay, ErrIdempotencyConflict) {
+				uc.metrics.ObserveIdempotencyConflict()
+			}
 			return ProcessWagerResult{}, errReplay
 		}
 		if !encontrado {
 			return ProcessWagerResult{}, fmt.Errorf("app: violação de unicidade sem transação correspondente: %w", err)
 		}
+		uc.metrics.ObserveReplay(sourceOf(ctx))
 		return res, nil
 	}
+
+	if errors.Is(err, postgres.ErrConcurrentUpdate) {
+		// Com o lock pessimista isto não deveria acontecer. Quando acontece,
+		// alguém escreveu por um caminho que não passou pelo lock.
+		uc.metrics.ObserveConcurrencyConflict()
+	}
+	if err == nil {
+		uc.metrics.ObserveWager(cmd.Kind.String(), res.Status.String(),
+			res.FailureCode.String(), sourceOf(ctx),
+			uc.clock.Now().Sub(inicio).Seconds())
+	}
 	return res, err
+}
+
+// origemKey marca de onde a operação chegou, para que a métrica separe HTTP de
+// fila sem que o caso de uso precise de dois caminhos.
+type origemKey struct{}
+
+// WithSource marca a origem da operação no contexto.
+func WithSource(ctx context.Context, origem string) context.Context {
+	return context.WithValue(ctx, origemKey{}, origem)
+}
+
+func sourceOf(ctx context.Context) string {
+	if v, ok := ctx.Value(origemKey{}).(string); ok && v != "" {
+		return v
+	}
+	return "unknown"
 }
 
 func (uc *ProcessWager) validate(cmd ProcessWagerCommand) error {

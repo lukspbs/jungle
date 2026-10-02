@@ -5,12 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/lukspbs/jungle/internal/adapter/postgres"
 	"github.com/lukspbs/jungle/internal/domain/events"
 	"github.com/lukspbs/jungle/internal/domain/wagering"
 	"github.com/lukspbs/jungle/internal/platform/logging"
+	"github.com/lukspbs/jungle/internal/platform/metrics"
 )
 
 // ReferenceWorker retoma as operações que ficaram aguardando uma referência.
@@ -24,6 +26,7 @@ type ReferenceWorker struct {
 	store     *postgres.Store
 	clock     Clock
 	logger    *slog.Logger
+	metrics   *metrics.Metrics
 	policy    ReferencePolicy
 	batchSize int
 	interval  time.Duration
@@ -32,15 +35,19 @@ type ReferenceWorker struct {
 // NewReferenceWorker monta o worker.
 func NewReferenceWorker(
 	processar *ProcessWager, store *postgres.Store, clock Clock, logger *slog.Logger,
-	policy ReferencePolicy, batchSize int, interval time.Duration,
+	m *metrics.Metrics, policy ReferencePolicy, batchSize int, interval time.Duration,
 ) *ReferenceWorker {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	if m == nil {
+		m = metrics.New()
+	}
 	return &ReferenceWorker{
 		processar: processar, store: store, clock: clock,
-		logger: logger.With(slog.String("component", "reference-worker")),
-		policy: policy, batchSize: batchSize, interval: interval,
+		logger:  logger.With(slog.String("component", "reference-worker")),
+		metrics: m,
+		policy:  policy, batchSize: batchSize, interval: interval,
 	}
 }
 
@@ -109,6 +116,7 @@ func (w *ReferenceWorker) Sweep(ctx context.Context) (SweepResult, error) {
 				slog.String("error", err.Error()))
 			continue
 		}
+		w.metrics.ObserveReferenceOutcome(strings.ToLower(desfecho.String()))
 		w.logger.InfoContext(ctx, "pendência retomada",
 			slog.String(logging.FieldTransactionID, pendente.ID().String()),
 			slog.String(logging.FieldProviderID, pendente.ProviderID()),

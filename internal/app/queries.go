@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/google/uuid"
 
@@ -11,6 +12,8 @@ import (
 	"github.com/lukspbs/jungle/internal/domain/money"
 	"github.com/lukspbs/jungle/internal/domain/wagering"
 	"github.com/lukspbs/jungle/internal/domain/wallet"
+	"github.com/lukspbs/jungle/internal/platform/logging"
+	"github.com/lukspbs/jungle/internal/platform/metrics"
 )
 
 // Queries reúne as consultas de leitura.
@@ -19,11 +22,17 @@ import (
 // uma leitura que não movimenta nada não precisa de lock nem de commit, e
 // misturá-las obrigaria o leitor do código a conferir, caso a caso, qual é qual.
 type Queries struct {
-	store *postgres.Store
+	store   *postgres.Store
+	metrics *metrics.Metrics
 }
 
 // NewQueries monta as consultas.
-func NewQueries(store *postgres.Store) *Queries { return &Queries{store: store} }
+func NewQueries(store *postgres.Store, m *metrics.Metrics) *Queries {
+	if m == nil {
+		m = metrics.New()
+	}
+	return &Queries{store: store, metrics: m}
+}
 
 // Wallet devolve uma carteira.
 func (q *Queries) Wallet(ctx context.Context, id uuid.UUID) (*wallet.Wallet, error) {
@@ -134,6 +143,20 @@ func (q *Queries) Reconcile(ctx context.Context, walletID uuid.UUID) (Reconcilia
 		}
 		return nil
 	})
+	if err == nil {
+		// A divergência é reportada na resposta, no log e aqui. Um painel que
+		// mostre esta série diferente de zero é o sinal mais barato de que algo
+		// saiu do lugar.
+		q.metrics.ObserveReconciliation(resultado.Consistent)
+		if !resultado.Consistent {
+			logging.From(ctx).ErrorContext(ctx, "divergência na reconciliação",
+				slog.String(logging.FieldWalletID, walletID.String()),
+				slog.String("storedBalance", resultado.StoredBalance.String()),
+				slog.String("calculatedBalance", resultado.CalculatedBalance.String()),
+				slog.String("difference", resultado.Difference.String()),
+				slog.Int("checkedEntries", resultado.CheckedEntries))
+		}
+	}
 	return resultado, err
 }
 
