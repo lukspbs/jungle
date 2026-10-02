@@ -98,6 +98,35 @@ func (s *Store) InTx(ctx context.Context, fn func(context.Context, *Repositories
 	return nil
 }
 
+// InSnapshot executa fn sobre uma visão única e imutável do banco.
+//
+// Existe porque InTx não serve para isto. Em READ COMMITTED cada comando pega
+// um snapshot novo, então duas leituras na mesma transação podem ver estados
+// diferentes — e uma conferência que compara dois lugares do banco entre si
+// acusaria divergência onde houve apenas uma escrita concorrente no intervalo.
+// REPEATABLE READ fixa o snapshot no primeiro comando e o mantém até o fim, que
+// é exatamente a garantia que uma reconciliação precisa.
+//
+// O modo é somente leitura: nada aqui escreve, e declarar isso impede que uma
+// escrita entre por engano num caminho que o leitor do código assume puro.
+// Sendo só leitura, também não há falha de serialização a tratar.
+func (s *Store) InSnapshot(ctx context.Context, fn func(context.Context, *Repositories) error) error {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{
+		IsoLevel:   pgx.RepeatableRead,
+		AccessMode: pgx.ReadOnly,
+	})
+	if err != nil {
+		return fmt.Errorf("postgres: falha ao abrir leitura consistente: %w", err)
+	}
+	defer func() {
+		rollbackCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+		defer cancel()
+		_ = tx.Rollback(rollbackCtx)
+	}()
+
+	return fn(ctx, newRepositories(tx))
+}
+
 // Ping confirma que o banco responde. Usado pelo health check de readiness.
 func (s *Store) Ping(ctx context.Context) error {
 	if err := s.pool.Ping(ctx); err != nil {

@@ -141,6 +141,10 @@ func (r *TransactionRepository) FindProcessedReversal(
 // morra no meio não prenda o registro: ele volta a ficar elegível quando o
 // prazo recém-gravado vencer.
 //
+// É aqui, e só aqui, que reference_attempts avança. Contar na reivindicação e
+// não no desfecho é deliberado: uma tentativa que nunca retorna precisa contar,
+// senão uma pendência problemática seria retomada para sempre.
+//
 // O UPDATE devolve só os identificadores, e cada transação é relida pelo
 // caminho normal. Repetir aqui a montagem do snapshot duplicaria vinte colunas
 // e criaria um segundo lugar para a reidratação sair de sincronia com o schema.
@@ -213,13 +217,18 @@ func (r *TransactionRepository) ReferenceExpiry(
 // As colunas de tentativa ficam fora do agregado de propósito: elas descrevem o
 // agendamento do worker, não o estado financeiro da operação. Misturá-las no
 // domínio faria a transação carregar detalhe de infraestrutura.
+//
+// O contador não é tocado aqui. Ele pertence a ClaimPendingReferences, que é
+// onde uma tentativa de fato começa — incrementar nos dois lugares faria cada
+// rodada do worker contar duas, e o REFERENCE_MAX_ATTEMPTS configurado valeria
+// metade. Este método só agenda: quando a próxima tentativa acontece e até
+// quando a espera vale.
 func (r *TransactionRepository) ScheduleReferenceRetry(
 	ctx context.Context, id uuid.UUID, nextAttemptAt, expiresAt time.Time,
 ) error {
 	const query = `
 		UPDATE wager_transactions
-		   SET reference_attempts = reference_attempts + 1,
-		       reference_next_attempt_at = $1,
+		   SET reference_next_attempt_at = $1,
 		       reference_expires_at = COALESCE(reference_expires_at, $2)
 		 WHERE id = $3`
 

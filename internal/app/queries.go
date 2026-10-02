@@ -105,15 +105,17 @@ type Reconciliation struct {
 
 // Reconcile reconstrói o saldo a partir do ledger e compara com o armazenado.
 //
-// A leitura acontece dentro de uma transação para que carteira e ledger venham
-// de uma visão consistente: fora dela, uma movimentação concorrente entre as
-// duas consultas produziria uma divergência que não existe.
+// A leitura acontece em InSnapshot, e não em InTx, porque a comparação só faz
+// sentido sobre uma visão única: o saldo e o ledger são lidos por comandos
+// diferentes, e em READ COMMITTED cada comando pegaria um snapshot novo. Uma
+// aposta confirmada entre as duas leituras apareceria como divergência — alarme
+// falso justamente na métrica que existe para denunciar divergência de verdade.
 //
 // A reconciliação não altera o saldo. Ela relata.
 func (q *Queries) Reconcile(ctx context.Context, walletID uuid.UUID) (Reconciliation, error) {
 	var resultado Reconciliation
 
-	err := q.store.InTx(ctx, func(ctx context.Context, r *postgres.Repositories) error {
+	err := q.store.InSnapshot(ctx, func(ctx context.Context, r *postgres.Repositories) error {
 		w, err := r.Wallets.FindByID(ctx, walletID)
 		if errors.Is(err, postgres.ErrWalletNotFound) {
 			return fmt.Errorf("%w: %s", ErrWalletNotFound, walletID)

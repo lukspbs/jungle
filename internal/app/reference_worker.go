@@ -202,16 +202,23 @@ func (w *ReferenceWorker) resume(
 		if err := r.Transactions.Update(ctx, tx); err != nil {
 			return err
 		}
-		if err := r.Ledger.Insert(ctx, entry); err != nil {
-			return err
-		}
-		if err := r.Wallets.UpdateBalance(ctx, carteira, versaoAnterior); err != nil {
-			return err
-		}
 
-		emitidos := []events.Payload{
-			processedPayload(tx, carteira, cmd),
-			balanceChangedPayload(tx, carteira, entry, agora),
+		emitidos := []events.Payload{processedPayload(tx, carteira, cmd)}
+
+		// move devolve lançamento nulo para tipo que não movimenta saldo. Hoje
+		// nenhum deles chega aqui — só reversões ficam pendentes de referência,
+		// e todas movimentam — mas repito a mesma guarda de processWithin em
+		// vez de depender dessa coincidência: o dia que um tipo reversível sem
+		// movimentação existir, isto seria um nil dentro de uma transação
+		// financeira.
+		if entry != nil {
+			if err := r.Ledger.Insert(ctx, entry); err != nil {
+				return err
+			}
+			if err := r.Wallets.UpdateBalance(ctx, carteira, versaoAnterior); err != nil {
+				return err
+			}
+			emitidos = append(emitidos, balanceChangedPayload(tx, carteira, entry, agora))
 		}
 		if err := w.processar.emit(ctx, r, emitidos, cmd.CorrelationID, tx.ID().String(), agora); err != nil {
 			return err

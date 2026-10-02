@@ -104,11 +104,21 @@ Uma operação completa confirma num único commit: o estado da transação, o s
 da carteira, o lançamento do ledger e os registros de evento da outbox. Na
 entrada por SQS, o registro de inbox entra no mesmo commit.
 
-**Nível de isolamento: `READ COMMITTED`**, o padrão do PostgreSQL. A coordenação
-entre escritores vem do `SELECT ... FOR UPDATE` explícito, não do nível de
-isolamento: um lock de linha dá exclusão mútua determinística por carteira, sem
-as falhas de serialização que `REPEATABLE READ` produziria sob as cinquenta
-duplicatas simultâneas do teste obrigatório.
+**Nível de isolamento das escritas: `READ COMMITTED`**, o padrão do PostgreSQL.
+A coordenação entre escritores vem do `SELECT ... FOR UPDATE` explícito, não do
+nível de isolamento: um lock de linha dá exclusão mútua determinística por
+carteira, sem as falhas de serialização que `REPEATABLE READ` produziria sob as
+cinquenta duplicatas simultâneas do teste obrigatório.
+
+**A reconciliação é a exceção, e usa `REPEATABLE READ` em modo somente leitura.**
+Ela não disputa nada com ninguém: ela compara dois lugares do banco entre si, o
+saldo da carteira e a soma do ledger, por comandos diferentes. Em
+`READ COMMITTED` cada comando pega um snapshot novo, e uma aposta confirmada no
+intervalo apareceria como divergência — alarme falso justamente na métrica que
+existe para denunciar divergência de verdade. `REPEATABLE READ` fixa o snapshot
+no primeiro comando, que é a garantia de que a conferência precisa; sendo só
+leitura, não há falha de serialização a tratar. A separação está em
+`Store.InTx` para escrita e `Store.InSnapshot` para esta leitura.
 
 ### Invariantes no banco
 
@@ -313,6 +323,14 @@ O recuo entre tentativas dobra a cada falha, por deslocamento de bits em
 aritmética inteira, até um teto. O teto existe para que uma pendência longa não
 acabe com intervalos de horas e atrase a resolução quando a referência enfim
 chegar.
+
+O contador de tentativas avança num único lugar: a reivindicação da pendência,
+em `ClaimPendingReferences`. Contar ali, e não no desfecho, faz uma tentativa
+que nunca retorna também contar — senão uma pendência problemática seria
+retomada para sempre. O agendamento da próxima tentativa não toca o contador:
+incrementar nos dois lugares faria cada rodada do worker contar duas, e o
+`REFERENCE_MAX_ATTEMPTS` configurado valeria metade, com o recuo avançando dois
+degraus por rodada em vez de um.
 
 **Encerramento**: o que vencer primeiro entre `REFERENCE_TTL` e
 `REFERENCE_MAX_ATTEMPTS` encerra a espera, com recusa `REFERENCE_NOT_FOUND` e
