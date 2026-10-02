@@ -23,7 +23,26 @@ const (
 	EnvEndpoint = "TEST_SQS_ENDPOINT"
 	EnvOutbound = "TEST_SQS_OUTBOUND_QUEUE_URL"
 	EnvInbound  = "TEST_SQS_INBOUND_QUEUE_URL"
+
+	// EnvAppOutbound aponta para a fila de saída da aplicação em execução.
+	//
+	// A outbox é uma tabela compartilhada: quando há instâncias rodando, o
+	// publisher delas pode reivindicar um evento criado pelo teste e entregá-lo
+	// na fila da aplicação. Procurar nas duas filas torna a verificação
+	// independente de quem venceu a disputa — que é exatamente o
+	// comportamento correto do sistema.
+	EnvAppOutbound = "TEST_SQS_APP_OUTBOUND_QUEUE_URL"
 )
+
+// FilasDeSaida devolve todas as filas onde um evento pode ter sido entregue.
+func FilasDeSaida(t *testing.T) []string {
+	t.Helper()
+	filas := []string{Config(t).OutboundQueueURL}
+	if app := os.Getenv(EnvAppOutbound); app != "" {
+		filas = append(filas, app)
+	}
+	return filas
+}
 
 // Config devolve a configuração do emulador, pulando o teste sem ela.
 func Config(t *testing.T) config.SQS {
@@ -137,4 +156,41 @@ func Receive(
 		}
 	}
 	return coletadas
+}
+
+// ReceiveUntil procura uma mensagem que satisfaça o critério, consumindo o que
+// vier pelo caminho.
+//
+// Diferente de Receive, não para na primeira mensagem: numa fila compartilhada
+// a primeira raramente é a procurada, e desistir ali produziria uma falha que
+// não diz nada sobre o sistema.
+func ReceiveUntil(
+	t *testing.T, client *awssqs.Client, queueURL string, prazo time.Duration,
+	casa func(types.Message) bool,
+) (types.Message, bool) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), prazo+15*time.Second)
+	defer cancel()
+
+	limite := time.Now().Add(prazo)
+	for time.Now().Before(limite) {
+		out, err := client.ReceiveMessage(ctx, &awssqs.ReceiveMessageInput{
+			QueueUrl:              aws.String(queueURL),
+			MaxNumberOfMessages:   10,
+			WaitTimeSeconds:       1,
+			MessageAttributeNames: []string{"All"},
+		})
+		if err != nil {
+			t.Fatalf("ReceiveMessage: %v", err)
+		}
+		for _, m := range out.Messages {
+			_, _ = client.DeleteMessage(ctx, &awssqs.DeleteMessageInput{
+				QueueUrl: aws.String(queueURL), ReceiptHandle: m.ReceiptHandle,
+			})
+			if casa(m) {
+				return m, true
+			}
+		}
+	}
+	return types.Message{}, false
 }

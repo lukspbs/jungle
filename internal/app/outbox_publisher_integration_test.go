@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
+
 	"github.com/lukspbs/jungle/internal/adapter/postgres"
 	adaptersqs "github.com/lukspbs/jungle/internal/adapter/sqs"
 	"github.com/lukspbs/jungle/internal/app"
@@ -101,25 +103,33 @@ func TestEventoChegaNaFilaComOsMesmosBytes(t *testing.T) {
 		t.Fatalf("Sweep: %v", err)
 	}
 
-	mensagens := sqstest.Receive(t, client, cfg.OutboundQueueURL, 1, 10*time.Second)
-	if len(mensagens) == 0 {
-		t.Fatal("nenhuma mensagem chegou na fila")
-	}
-
+	// A busca cobre todas as filas de saída e filtra pelo evento procurado.
+	// Com instâncias rodando, o publisher delas pode ter reivindicado este
+	// evento primeiro e entregue na fila da aplicação — comportamento correto,
+	// não falha. E a fila tem tráfego de outros testes, então parar na primeira
+	// mensagem que chegasse não provaria nada.
+	alvo := gravados[0].EventID.String()
 	var achou bool
-	for _, m := range mensagens {
-		if bytes.Equal([]byte(*m.Body), esperado) {
-			achou = true
-			if attr, ok := m.MessageAttributes["eventId"]; !ok || *attr.StringValue != gravados[0].EventID.String() {
-				t.Error("o atributo eventId não acompanha a mensagem")
-			}
-			if attr, ok := m.MessageAttributes["eventType"]; !ok || *attr.StringValue == "" {
-				t.Error("o atributo eventType não acompanha a mensagem")
-			}
+	for _, fila := range sqstest.FilasDeSaida(t) {
+		msg, ok := sqstest.ReceiveUntil(t, client, fila, 8*time.Second, func(m types.Message) bool {
+			attr, presente := m.MessageAttributes["eventId"]
+			return presente && attr.StringValue != nil && *attr.StringValue == alvo
+		})
+		if !ok {
+			continue
 		}
+		achou = true
+		if !bytes.Equal([]byte(*msg.Body), esperado) {
+			t.Errorf("o corpo publicado difere do gravado.\n  gravado:   %s\n  publicado: %s",
+				esperado, *msg.Body)
+		}
+		if attr, ok := msg.MessageAttributes["eventType"]; !ok || attr.StringValue == nil || *attr.StringValue == "" {
+			t.Error("o atributo eventType não acompanha a mensagem")
+		}
+		break
 	}
 	if !achou {
-		t.Errorf("o corpo publicado difere do gravado.\n  gravado: %s", esperado)
+		t.Errorf("o evento %s não chegou a nenhuma fila de saída", alvo)
 	}
 
 	// Publicado sai da fila da outbox e não volta.
