@@ -66,6 +66,23 @@ func TestCredencialInvalidaEhRecusada(t *testing.T) {
 	}
 }
 
+// TestCredencialExpiradaEhRecusada fecha o §13: credencial ausente, inválida
+// ou expirada deve ser recusada. As duas primeiras estão nos testes acima.
+//
+// A expiração é verificada pelo go-oidc, que a checa por padrão — este teste
+// existe para que isso continue verdade. Trocar o verificador por um que
+// aceitasse token vencido passaria por todos os outros testes de autenticação.
+func TestCredencialExpiradaEhRecusada(t *testing.T) {
+	a := novaAPI(t)
+	token := authtest.Expirado(t)
+
+	status, corpo := a.do(t, "GET", "/wallets/"+uuid.NewString(), nil,
+		map[string]string{"Authorization": authtest.Bearer(token)})
+	if status != http.StatusUnauthorized {
+		t.Errorf("status = %d, esperado 401 para token expirado: %s", status, corpo)
+	}
+}
+
 func TestHealthChecksSaoPublicos(t *testing.T) {
 	a := novaAPI(t).comToken("")
 

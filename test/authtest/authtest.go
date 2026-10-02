@@ -7,6 +7,7 @@ package authtest
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -34,6 +35,11 @@ const (
 	ClientProviderB = "provider-b"
 	SecretProviderB = "provider-b-secret-local"
 	Audience        = "jungle-api"
+
+	// O client efêmero tem lifespan de 1s no realm. Existe só para que um
+	// teste consiga um token legítimo e já vencido.
+	ClientEfemero = "provider-efemero"
+	SecretEfemero = "provider-efemero-secret-local"
 )
 
 // Config devolve a configuração de autenticação, pulando o teste sem o IdP.
@@ -112,6 +118,52 @@ func ProviderA(t *testing.T) string { return Token(t, ClientProviderA, SecretPro
 
 // ProviderB devolve o token do provedor B, usado para provar o isolamento.
 func ProviderB(t *testing.T) string { return Token(t, ClientProviderB, SecretProviderB) }
+
+// Expirado devolve um token emitido de verdade e já fora da validade.
+//
+// O token vem do Keycloak, por um client cujo lifespan é de um segundo. Forjar
+// um JWT com exp no passado não serviria: a assinatura falharia antes de a
+// validade ser olhada, e o teste passaria pelo motivo errado — provando que
+// assinatura inválida é recusada, coisa que outro teste já prova.
+func Expirado(t *testing.T) string {
+	t.Helper()
+	token := Token(t, ClientEfemero, SecretEfemero)
+
+	// Um segundo além do exp. Parar no limite exato deixaria o resultado na
+	// mão do arredondamento do relógio.
+	if espera := time.Until(expiracao(t, token).Add(time.Second)); espera > 0 {
+		time.Sleep(espera)
+	}
+	return token
+}
+
+// expiracao lê o claim exp sem verificar nada.
+//
+// O teste precisa do exp para saber quanto esperar, não para confiar no token
+// — quem valida é o serviço, que é justamente o que está sob teste.
+func expiracao(t *testing.T, token string) time.Time {
+	t.Helper()
+
+	partes := strings.Split(token, ".")
+	if len(partes) != 3 {
+		t.Fatalf("o emissor devolveu algo que não é um JWT de três partes")
+	}
+	corpo, err := base64.RawURLEncoding.DecodeString(partes[1])
+	if err != nil {
+		t.Fatalf("corpo do token ilegível: %v", err)
+	}
+
+	var claims struct {
+		Exp int64 `json:"exp"`
+	}
+	if err := json.Unmarshal(corpo, &claims); err != nil {
+		t.Fatalf("claims ilegíveis: %v", err)
+	}
+	if claims.Exp == 0 {
+		t.Fatal("o token não traz exp: não há validade para vencer")
+	}
+	return time.Unix(claims.Exp, 0)
+}
 
 // Bearer formata o cabeçalho.
 func Bearer(token string) string { return fmt.Sprintf("Bearer %s", token) }

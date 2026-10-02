@@ -89,13 +89,15 @@ func Pool(t *testing.T) *pgxpool.Pool {
 // a operação normal dela.
 //
 // A drenagem é global, e não tem como não ser: ela existe justamente para
-// limpar o que outros deixaram. Isso faz dela incompatível com pacotes rodando
-// em paralelo — o Go roda pacotes concorrentemente por padrão, e uma drenagem
-// no pacote postgres marcaria publicado o evento que um teste do pacote app
-// acabou de gravar e ainda não publicou. Por isso a suíte com infraestrutura
-// roda com `-p 1`, e o README diz isso junto do comando.
+// limpar o que outros deixaram. Isso a tornava incompatível com pacotes
+// rodando em paralelo — o Go roda pacotes concorrentemente por padrão, e uma
+// drenagem no pacote postgres marcava publicado o evento que um teste do
+// pacote app acabou de gravar e ainda não publicou. Por isso quem drena
+// primeiro toma a trava descrita em travarOutbox.
 func DrainOutbox(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
+	travarOutbox(t, pool)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -105,6 +107,87 @@ func DrainOutbox(t *testing.T, pool *pgxpool.Pool) {
 		 WHERE published_at IS NULL`); err != nil {
 		t.Fatalf("falha ao drenar a outbox: %v", err)
 	}
+}
+
+// chaveTravaOutbox identifica o advisory lock que serializa os testes de
+// outbox. O valor é arbitrário — só precisa não colidir com o do migrator.
+const chaveTravaOutbox int64 = 0x6A756E676C65 // "jungle" em ASCII
+
+var (
+	muTravadas sync.Mutex
+	travadas   = map[*testing.T]struct{}{}
+)
+
+// travarOutbox serializa, entre processos, os testes que medem a outbox.
+//
+// A trava é do banco e não do processo porque o problema também é: `go test
+// ./...` roda cada pacote num processo próprio e vários ao mesmo tempo, então
+// um mutex em Go não alcançaria o pacote vizinho. Um advisory lock alcança,
+// porque os dois processos falam com o mesmo PostgreSQL.
+//
+// Ela vale do primeiro DrainOutbox até o fim do teste, e não só durante a
+// drenagem: o que precisa de exclusividade é a janela inteira entre drenar e
+// conferir, já que é nela que uma drenagem alheia faria estrago.
+//
+// O laço usa pg_try_advisory_lock em vez de pg_advisory_lock, que bloquearia:
+// o pool impõe statement_timeout, e uma espera longa dentro do próprio comando
+// seria abortada por ele. Tentar e dormir mantém cada comando instantâneo.
+func travarOutbox(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+
+	// Um mesmo teste pode drenar mais de uma vez; a trava é tomada só na
+	// primeira, senão o unlock do cleanup não casaria com os locks tomados.
+	muTravadas.Lock()
+	_, repetida := travadas[t]
+	travadas[t] = struct{}{}
+	muTravadas.Unlock()
+	if repetida {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	conexao, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("falha ao obter conexão para a trava da outbox: %v", err)
+	}
+
+	for {
+		var obtida bool
+		if err := conexao.QueryRow(ctx,
+			"SELECT pg_try_advisory_lock($1)", chaveTravaOutbox).Scan(&obtida); err != nil {
+			conexao.Release()
+			t.Fatalf("falha ao tentar travar a outbox: %v", err)
+		}
+		if obtida {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			conexao.Release()
+			t.Fatal("a trava da outbox não foi liberada no prazo")
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+
+	t.Cleanup(func() {
+		liberacao, cancelar := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancelar()
+
+		// O unlock é explícito porque a conexão volta para o pool em vez de
+		// fechar: sem ele a trava sobreviveria ao teste, presa numa sessão que
+		// segue viva.
+		if _, err := conexao.Exec(liberacao,
+			"SELECT pg_advisory_unlock($1)", chaveTravaOutbox); err != nil {
+			t.Errorf("falha ao liberar a trava da outbox: %v", err)
+		}
+		conexao.Release()
+
+		muTravadas.Lock()
+		delete(travadas, t)
+		muTravadas.Unlock()
+	})
 }
 
 func applyMigrations(url string) error {

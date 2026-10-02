@@ -32,7 +32,24 @@ const (
 	// independente de quem venceu a disputa — que é exatamente o
 	// comportamento correto do sistema.
 	EnvAppOutbound = "TEST_SQS_APP_OUTBOUND_QUEUE_URL"
+
+	// EnvInboundDLQ aponta para a DLQ da fila de entrada.
+	//
+	// Não entra em config.SQS porque a aplicação não a conhece: o redrive é
+	// política da fila, aplicada pelo broker. Quem precisa do endereço é só o
+	// teste que confere se a política está de fato configurada.
+	EnvInboundDLQ = "TEST_SQS_INBOUND_DLQ_URL"
 )
+
+// FilaDLQ devolve a DLQ da entrada, pulando o teste sem ela.
+func FilaDLQ(t *testing.T) string {
+	t.Helper()
+	url := os.Getenv(EnvInboundDLQ)
+	if url == "" {
+		t.Skipf("%s não definida: teste de DLQ pulado", EnvInboundDLQ)
+	}
+	return url
+}
 
 // FilasDeSaida devolve todas as filas onde um evento pode ter sido entregue.
 func FilasDeSaida(t *testing.T) []string {

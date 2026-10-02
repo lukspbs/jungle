@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awssqs "github.com/aws/aws-sdk-go-v2/service/sqs"
+	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
 	"github.com/google/uuid"
 
 	"github.com/lukspbs/jungle/internal/adapter/postgres"
@@ -295,7 +297,116 @@ func TestMensagemInvalidaNaoEhApagada(t *testing.T) {
 	if got := f.saldo(t); got != "100.00" {
 		t.Errorf("saldo = %q: mensagem inválida movimentou a carteira", got)
 	}
-	// Não apagadas: continuam na fila até a política de redrive levá-las à DLQ.
+	// Não apagadas: continuam na fila. Quem as tira de lá é o redrive, e é o
+	// que TestMensagemEsgotadaChegaNaDLQ verifica.
+}
+
+// TestMensagemEsgotadaChegaNaDLQ fecha o §10: tentativas esgotadas devem chegar
+// à DLQ.
+//
+// Quem move a mensagem é o broker, pela política de redrive da fila, e não a
+// aplicação — então o teste confere as duas metades: que a política provisionada
+// existe, e que ela de fato move a mensagem.
+//
+// Os recebimentos vêm do próprio teste, com VisibilityTimeout 0 para devolver a
+// mensagem na hora. Deixar o consumidor falhar as cinco vezes custaria dois
+// minutos e meio de suíte — o visibility timeout é de 30s — para afirmar
+// exatamente a mesma coisa. O grupo FIFO é próprio para não interferir na ordem
+// dos outros cenários, e novaFila garante que a fila esteja vazia na entrada.
+func TestMensagemEsgotadaChegaNaDLQ(t *testing.T) {
+	f := novaFila(t, "100.00")
+	dlq := sqstest.FilaDLQ(t)
+	ctx := context.Background()
+
+	sqstest.Drain(t, f.client, dlq)
+	t.Cleanup(func() { sqstest.Drain(t, f.client, dlq) })
+
+	// Primeira metade: a política está provisionada.
+	attrs, err := f.client.GetQueueAttributes(ctx, &awssqs.GetQueueAttributesInput{
+		QueueUrl:       aws.String(f.queueURL),
+		AttributeNames: []types.QueueAttributeName{types.QueueAttributeNameRedrivePolicy},
+	})
+	if err != nil {
+		t.Fatalf("GetQueueAttributes: %v", err)
+	}
+	politica := attrs.Attributes[string(types.QueueAttributeNameRedrivePolicy)]
+	if politica == "" {
+		t.Fatal("a fila de entrada não tem RedrivePolicy: mensagem esgotada ficaria presa para sempre")
+	}
+	if !strings.Contains(politica, "deadLetterTargetArn") || !strings.Contains(politica, "maxReceiveCount") {
+		t.Errorf("RedrivePolicy incompleta: %s", politica)
+	}
+
+	// Segunda metade: a política move a mensagem.
+	marca := f.prefixo + "-esgotada"
+	if _, err := f.client.SendMessage(ctx, &awssqs.SendMessageInput{
+		QueueUrl:               aws.String(f.queueURL),
+		MessageBody:            aws.String(`{"messageId":"` + marca + `","type":"TipoDesconhecido","data":{}}`),
+		MessageGroupId:         aws.String("dlq-" + f.prefixo),
+		MessageDeduplicationId: aws.String(uuid.NewString()),
+	}); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+
+	// Enquanto não migrar, a mensagem segue sendo entregue e devolvida. O laço
+	// conta entregas de verdade em vez de só chamar ReceiveMessage n vezes:
+	// num FIFO o grupo fica indisponível por um instante depois de cada
+	// entrega, e um laço cego voltaria vazio sem incrementar contador nenhum.
+	// A DLQ é consultada a cada rodada porque o limite exato em que o broker
+	// transfere não é contrato nosso — o que importa é que ele transfira.
+	prazo := time.Now().Add(45 * time.Second)
+	entregas := 0
+	chegou := false
+	for !chegou && time.Now().Before(prazo) {
+		origem, err := f.client.ReceiveMessage(ctx, &awssqs.ReceiveMessageInput{
+			QueueUrl:            aws.String(f.queueURL),
+			MaxNumberOfMessages: 1,
+			VisibilityTimeout:   0,
+			WaitTimeSeconds:     1,
+		})
+		if err != nil {
+			t.Fatalf("ReceiveMessage na entrada: %v", err)
+		}
+		for _, m := range origem.Messages {
+			if !strings.Contains(aws.ToString(m.Body), marca) {
+				continue
+			}
+			entregas++
+			// Devolve a mensagem na hora. O VisibilityTimeout do próprio
+			// ReceiveMessage não basta: o emulador aplica o da fila de
+			// qualquer forma, e esperar os 5s dela a cada entrega faria este
+			// teste sozinho custar meio minuto.
+			if _, err := f.client.ChangeMessageVisibility(ctx, &awssqs.ChangeMessageVisibilityInput{
+				QueueUrl:          aws.String(f.queueURL),
+				ReceiptHandle:     m.ReceiptHandle,
+				VisibilityTimeout: 0,
+			}); err != nil {
+				t.Fatalf("ChangeMessageVisibility: %v", err)
+			}
+		}
+
+		morta, err := f.client.ReceiveMessage(ctx, &awssqs.ReceiveMessageInput{
+			QueueUrl:            aws.String(dlq),
+			MaxNumberOfMessages: 10,
+			VisibilityTimeout:   0,
+			WaitTimeSeconds:     0,
+		})
+		if err != nil {
+			t.Fatalf("ReceiveMessage na DLQ: %v", err)
+		}
+		for _, m := range morta.Messages {
+			if strings.Contains(aws.ToString(m.Body), marca) {
+				chegou = true
+			}
+		}
+	}
+	if !chegou {
+		t.Errorf("a mensagem não chegou à DLQ depois de %d entregas (maxReceiveCount provisionado: 5)", entregas)
+	}
+
+	if got := f.saldo(t); got != "100.00" {
+		t.Errorf("saldo = %q: a mensagem esgotada movimentou a carteira", got)
+	}
 }
 
 // TestRecusaDeNegocioEhTerminalEPermiteRemocao cobre a regra do §10: uma recusa

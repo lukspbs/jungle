@@ -158,16 +158,21 @@ global.
 ## Identidades e autenticação
 
 O realm em [`docker/keycloak/realm-jungle.json`](docker/keycloak/realm-jungle.json)
-é importado automaticamente e traz três clientes, todos por `client_credentials`:
+é importado automaticamente e traz quatro clientes, todos por
+`client_credentials`:
 
 | Cliente | Secret | Papel | `provider_id` |
 | --- | --- | --- | --- |
 | `jungle-internal` | `internal-secret-local` | `wallet-admin` | — |
 | `provider-a` | `provider-a-secret-local` | `wager-provider` | `provider-a` |
 | `provider-b` | `provider-b-secret-local` | `wager-provider` | `provider-b` |
+| `provider-efemero` | `provider-efemero-secret-local` | `wager-provider` | `provider-efemero` |
 
 O `provider-b` existe para demonstrar o isolamento: ele não enxerga as operações
-do `provider-a`.
+do `provider-a`. O `provider-efemero` tem validade de token de **1 segundo** e
+serve a um único teste, o de recusa de credencial expirada — forjar um JWT
+vencido não serviria, porque a assinatura falharia antes de a validade ser
+olhada.
 
 Obtendo um token:
 
@@ -410,41 +415,48 @@ testes:
 docker compose up -d postgres localstack keycloak migrate
 ```
 
+O realm é importado só quando o container do Keycloak é criado, não a cada
+subida. Se o seu já existia antes, recrie-o uma vez — senão o teste de
+credencial expirada falha por não achar o `provider-efemero`:
+
+```sh
+docker compose up -d --force-recreate keycloak
+```
+
 ```sh
 set -a && source .env.test && set +a
 ```
 
 ```sh
-go test -race -p 1 ./...
+go test -race ./...
 ```
 
 O [`.env.test`](.env.test) aponta para os endereços expostos pelo Compose. As
 filas usadas são dedicadas (`test-*`), então a suíte não disputa mensagens com o
 consumidor da aplicação.
 
-Duas coisas nesse comando não são decorativas.
+**A aplicação fica fora** porque a fila dedicada não basta: o publicador da
+outbox de cada instância varre a tabela `outbox_events` do mesmo banco a cada
+segundo, e é a tabela — não a fila de destino — que os testes de publicação
+medem. Com instâncias no ar, uma delas reivindica o evento do teste antes do
+publicador do teste, e os cenários de lease, reagendamento e entrega única
+falham de forma intermitente. Não é defeito da aplicação: é a aplicação fazendo
+o seu trabalho sobre a mesma fila que o teste está inspecionando.
 
-**`-p 1`**, porque os testes de outbox precisam limpar os eventos pendentes
-antes de medir a fila — e essa limpeza é necessariamente global, já que existe
-para apagar o que execuções anteriores deixaram. O Go roda pacotes em paralelo
-por padrão, e aí uma limpeza no pacote `postgres` marca publicado o evento que
-um teste do pacote `app` acabou de gravar. Serializar os pacotes resolve; a
-suíte fica alguns segundos mais lenta e determinística.
-
-**A aplicação fora**, porque a fila dedicada não basta: o publicador da outbox
-de cada instância varre a tabela `outbox_events` do mesmo banco a cada segundo,
-e é a tabela — não a fila de destino — que os testes de publicação medem. Com
-instâncias no ar, uma delas reivindica o evento do teste antes do publicador do
-teste, e os cenários de lease, reagendamento e entrega única falham de forma
-intermitente. Não é defeito da aplicação: é a aplicação fazendo o seu trabalho
-sobre a mesma fila que o teste está inspecionando.
+Entre os pacotes de teste, a disputa pela outbox é resolvida por um advisory
+lock no PostgreSQL: quem vai medir a fila limpa os pendentes primeiro, e essa
+limpeza é necessariamente global. A trava é do banco porque o problema também é
+— `go test ./...` roda cada pacote num processo próprio, e vários ao mesmo
+tempo, então um mutex em Go não alcançaria o pacote vizinho. Por isso o comando
+acima não precisa de `-p 1`.
 
 Os cenários que precisam das instâncias no ar são os de múltiplas instâncias,
 logo abaixo, e eles conversam por HTTP em vez de inspecionar a outbox.
 
 Isso cobre, contra PostgreSQL, SQS e Keycloak reais: migrations, constraints,
 imutabilidade do ledger, atomicidade, inbox, reentrega, outbox concorrente,
-retry, autenticação e isolamento entre provedores.
+retry, redrive até a DLQ, autenticação — incluindo credencial ausente, inválida
+e expirada — e isolamento entre provedores.
 
 ## Múltiplas instâncias e simulação de falhas
 
